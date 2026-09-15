@@ -1,8 +1,8 @@
-Readme for VDH_YouTubeDownloader
+Readme for VDH_Media_center
 Introduction:
-vdhYouTubeDownloader is created by vdh productions. This software allows you to search YouTube, download videos, or even play videos if you want. I created this software to help you conveniently watch YouTube videos without worrying about where to listen to them.
+vdhMediaCenter is created by vdh productions. This software allows you to search YouTube, download videos, or even play videos if you want. I created this software to help you conveniently watch YouTube videos without worrying about where to listen to them.
 Instructions:
-After downloading, please extract the file. Note: If your antivirus software scans the exe file, please turn off your antivirus software. Find the vdh youtube downloader.exe file to start a software window.
+After downloading, please extract the file. Note: If your antivirus software scans the exe file, please turn off your antivirus software. Find the vdh media center.exe file to start a software window.
 After running, an interface will appear with the following functions:
 PlayYouTubeLink: This function allows you to paste the YouTube link so you can listen. It includes a Play (Default Player) button to listen directly within the software interface. Play in Browser allows you to open it directly in your browser.
 Play a direct link: You can watch videos directly from YouTube or sites that support stream links.

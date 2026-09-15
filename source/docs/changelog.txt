@@ -1,3 +1,16 @@
+changes for version 2.5
+- The decompression system has been rewritten to give it a modern look.
+- We have redesigned all the combo boxes to improve accessibility for screen readers and new standards.
+- The video/audio download interface has been upgraded.
+- After pressing the download button, you will no longer see the cmd window; instead, we have hidden it, and the screen reader will emit a beep sound and read the percentage for you to easily follow.
+- Fixed the missing data warning bug that occurred when the music download process started.
+- You will find a new library called dino.exe in the lib folder. This helps prevent data errors and irrelevant warnings when downloading music to your computer.
+- spotify tab has been removed
+- Removed some information when press "i" key in the music playback interface.
+- Added audio file listening so you can listen to files from your computer. press alt+u from main interface to activate feature.
+- update yt-dlp to version 2026.08.19
+- The project has changed its name to vdh media center
+
 changes for version 2.4
 - new feature:
   - add spotify tab in download from link.
