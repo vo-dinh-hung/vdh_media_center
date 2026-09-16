@@ -228,7 +228,7 @@ For $iMsg In $aGlobalMsgs
     DllCall("user32.dll", "bool", "ChangeWindowMessageFilter", "uint", $iMsg, "dword", 1)
 Next
 
-Global $version = "2.5"
+Global $version = "2.5.1"
 Global $YT_DLP_PATH = @ScriptDir & "\lib\yt-dlp.exe"
 
 ; --- JS runtime cho yt-dlp (khắc phục cảnh báo "No supported JavaScript runtime could be found") ---
@@ -286,7 +286,7 @@ Global $mainform
 Global $cbo_dl_format, $btn_start_dl, $openbtn, $paste
 Global $linkedit, $play_btn, $online_play_btn
 Global $btn_Menu_Audio
-Global $g_sSupportedAudioExts = ".mp3;.m4a;.wav;.ogg;"
+Global $g_sSupportedAudioExts = ".mp3;.m4a;.wav;.ogg;.flac;.aac;.wma;.opus;.mp4;"
 Global $inp_search, $btn_search_go, $lst_results, $btn_search_hist
 Global $hDummyLoadMore = 0
 Global $hCurrentSubGui = 0
@@ -307,6 +307,10 @@ Global $hDummyCtrlLeft, $hDummyCtrlRight, $hDummyCtrlT, $hDummyCtrlShiftT, $hDum
 Global $hDummyI
 Global $hDummy1, $hDummy2, $hDummy3, $hDummy4, $hDummy5, $hDummy6, $hDummy7, $hDummy8, $hDummy9, $hDummyP
 Global $hDummyR, $hDummyRemaining, $hDummyShiftN, $hDummyShiftB, $hDummyCtrlW, $hDummyMinus, $hDummyEqual, $hDummyS, $hDummyD, $hDummyF, $hDummyCtrlShiftE, $hDummyEsc, $hDummyG, $hDummyApps, $hDummyBracketLeft, $hDummyBracketRight, $hDummyCtrlS, $hDummyCtrlK, $hDummyCtrlC, $hDummyCtrlShiftC, $hDummyCtrlShiftD, $hDummyAltB, $hDummyAltG
+Global $hDummyB ; "b" key: previous track (only active while a folder playlist is loaded)
+Global $g_aLocalPlaylist[1] = [""]
+Global $g_iLocalPlaylistCount = 0
+Global $g_bLocalPlaylistMode = False ; True only while playing a folder-loaded playlist (enables n/b navigation)
 Global $g_sLastReportedText = "", $g_iLastReportedTime = 0
 Global $g_sCurrentVideoTitle = ""
 Global $g_sSearchFilter = "No Filter"
@@ -2227,9 +2231,49 @@ Func playaudio($url)
 EndFunc
 
 Func _ListenToAudioFile()
-    ; Only the audio formats already supported elsewhere in the software
-    ; (see the Download Audio format options: MP3, M4A, WAV, OGG)
-    Local $sFilter = "Supported Audio Files (*.mp3;*.m4a;*.wav;*.ogg)|MP3 Audio (*.mp3)|M4A Audio (*.m4a)|WAV Audio (*.wav)|OGG Audio (*.ogg)"
+    Local $hChooseGui = GUICreate("Listen to Audio", 380, 210, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU))
+    GUISetBkColor($COLOR_BLUE)
+
+    GUICtrlCreateLabel("Choose how you want to load audio:", 10, 15, 360, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+
+    Local $btn_AddFile = GUICtrlCreateButton("Add File... (Alt+F)", 40, 50, 300, 40)
+    Local $btn_AddFolder = GUICtrlCreateButton("Add Folder... (Alt+D)", 40, 100, 300, 40)
+    Local $btn_CloseChoose = GUICtrlCreateButton("Close", 40, 155, 300, 35)
+
+    Local $hDummyEscChoose = GUICtrlCreateDummy()
+    Local $aAccelChoose[3][2] = [["!f", $btn_AddFile], ["!d", $btn_AddFolder], ["{ESC}", $hDummyEscChoose]]
+    GUISetAccelerators($aAccelChoose, $hChooseGui)
+
+    GUISetState(@SW_SHOW, $hChooseGui)
+    _AllowUIPI($hChooseGui)
+
+    While 1
+        Local $nMsg = GUIGetMsg()
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btn_CloseChoose, $hDummyEscChoose
+                GUIDelete($hChooseGui)
+                ExitLoop
+
+            Case $btn_AddFile
+                GUIDelete($hChooseGui)
+                _AddSingleAudioFile()
+                ExitLoop
+
+            Case $btn_AddFolder
+                GUIDelete($hChooseGui)
+                _AddAudioFolder()
+                ExitLoop
+        EndSwitch
+    WEnd
+EndFunc
+
+; "Add File": pick a single audio (or .mp4) file and just play that one file.
+; No n/b navigation here - this is a single-track playback.
+Func _AddSingleAudioFile()
+    Local $sFilter = "Supported Media Files (*.mp3;*.m4a;*.wav;*.ogg;*.flac;*.aac;*.wma;*.opus;*.mp4)|" & _
+        "MP3 Audio (*.mp3)|M4A Audio (*.m4a)|WAV Audio (*.wav)|OGG Audio (*.ogg)|" & _
+        "FLAC Audio (*.flac)|AAC Audio (*.aac)|WMA Audio (*.wma)|OPUS Audio (*.opus)|MP4 Video/Audio (*.mp4)"
     Local $sFile = FileOpenDialog("Select an audio file to listen to", @MyDocumentsDir, $sFilter, 1)
     If @error Then Return ; user cancelled the dialog
 
@@ -2237,7 +2281,7 @@ Func _ListenToAudioFile()
     Local $aExtMatch = StringRegExp($sFile, "\.([A-Za-z0-9]+)$", 3)
     Local $sExt = (UBound($aExtMatch) > 0) ? StringLower($aExtMatch[0]) : ""
     If Not StringInStr($g_sSupportedAudioExts, "." & $sExt & ";") Then
-        MsgBox(16, "Unsupported Format", "This audio format is not supported." & @CRLF & "Supported formats: MP3, M4A, WAV, OGG.")
+        MsgBox(16, "Unsupported Format", "This audio format is not supported." & @CRLF & "Supported formats: MP3, M4A, WAV, OGG, FLAC, AAC, WMA, OPUS, MP4.")
         Return
     EndIf
 
@@ -2247,6 +2291,9 @@ Func _ListenToAudioFile()
     $sTitle = StringRegExpReplace($sTitle, "\.[A-Za-z0-9]+$", "")
 
     _AddHistory($sFile, $sTitle, "local_audio")
+
+    ; Single file loaded directly - n/b navigation must stay OFF
+    $g_bLocalPlaylistMode = False
 
     Local $hLoading = 0
     If Not IsHWnd($hPlayGui) Then
@@ -2262,6 +2309,100 @@ Func _ListenToAudioFile()
     EndIf
 
     _PlayInternal($sFile, $sTitle, True, $hLoading, False, $sFile, True)
+EndFunc
+
+; "Add Folder": scan a folder for supported audio files and start a playlist.
+; While this playlist is playing, "n" = next file, "b" = previous file.
+Func _AddAudioFolder()
+    Local $sFolder = FileSelectFolder("Select a folder containing audio files", @MyDocumentsDir)
+    If @error Then Return ; user cancelled the dialog
+
+    ReDim $g_aLocalPlaylist[1]
+    $g_iLocalPlaylistCount = 0
+
+    Local $sSearch = FileFindFirstFile($sFolder & "\*.*")
+    If $sSearch = -1 Then
+        MsgBox(48, "Empty Folder", "No files were found in the selected folder.")
+        Return
+    EndIf
+
+    While 1
+        Local $sName = FileFindNextFile($sSearch)
+        If @error Then ExitLoop
+
+        ; @extended = 1 means this entry is a subfolder - skip it, only look
+        ; at files directly inside the chosen folder
+        If @extended Then ContinueLoop
+
+        Local $aExtMatch = StringRegExp($sName, "\.([A-Za-z0-9]+)$", 3)
+        Local $sExt = (UBound($aExtMatch) > 0) ? StringLower($aExtMatch[0]) : ""
+        If StringInStr($g_sSupportedAudioExts, "." & $sExt & ";") Then
+            $g_iLocalPlaylistCount += 1
+            ReDim $g_aLocalPlaylist[$g_iLocalPlaylistCount]
+            $g_aLocalPlaylist[$g_iLocalPlaylistCount - 1] = $sFolder & "\" & $sName
+        EndIf
+    WEnd
+    FileClose($sSearch)
+
+    If $g_iLocalPlaylistCount = 0 Then
+        MsgBox(48, "No Audio Files", "No supported audio files were found in this folder." & @CRLF & "Supported formats: MP3, M4A, WAV, OGG, FLAC, AAC, WMA, OPUS, MP4.")
+        Return
+    EndIf
+
+    _ArraySort($g_aLocalPlaylist)
+
+    $g_bLocalPlaylistMode = True
+    _PlayLocalFolder(0)
+EndFunc
+
+; Drives playback through a folder-loaded playlist. Pressing "n" inside the
+; player moves to the next file, "b" moves to the previous one; the track
+; also auto-advances to the next file when one finishes (unless Repeat is on).
+Func _PlayLocalFolder($iIndex)
+    While 1
+        If $iIndex < 0 Then
+            _ReportStatus("This is the first track")
+            $iIndex = 0
+        ElseIf $iIndex >= $g_iLocalPlaylistCount Then
+            ExitLoop ; past the last track - stop playback
+        EndIf
+
+        Local $sFile = $g_aLocalPlaylist[$iIndex]
+        Local $aNameMatch = StringRegExp($sFile, "([^\\\/]+)$", 3)
+        Local $sTitle = (UBound($aNameMatch) > 0) ? $aNameMatch[0] : $sFile
+        $sTitle = StringRegExpReplace($sTitle, "\.[A-Za-z0-9]+$", "")
+
+        _AddHistory($sFile, $sTitle, "local_audio")
+
+        Local $hLoading = 0
+        If Not IsHWnd($hPlayGui) Then
+            $hLoading = GUICreate("Playing", 250, 80, -1, -1, BitOR($WS_POPUP, $WS_BORDER), BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW))
+            GUICtrlCreateLabel("Loading audio file, please wait...", 10, 25, 230, 30, $SS_CENTER)
+            GUISetBkColor(0xFFFFFF, $hLoading)
+            GUISetState(@SW_SHOW, $hLoading)
+            DllCall("winmm.dll", "int", "PlaySoundW", "wstr", @ScriptDir & "\sounds\loading.wav", "ptr", 0, "dword", 0x0009)
+            Sleep(200)
+        Else
+            GUICtrlSetData($g_lblPlayerInfo, "Loading audio file...")
+            GUICtrlSetData($g_hStatusLabel, "Loading " & $sTitle & "...")
+        EndIf
+
+        $g_bLocalPlaylistMode = True ; keep n/b navigation enabled through the whole session
+        Local $sAction = _PlayInternal($sFile, $sTitle & " (" & ($iIndex + 1) & "/" & $g_iLocalPlaylistCount & ")", True, $hLoading, False, $sFile, True)
+
+        If $sAction = "NEXT" Or $sAction = "FINISHED" Then
+            $iIndex += 1
+        ElseIf $sAction = "BACK" Then
+            $iIndex -= 1
+        ElseIf $sAction = "RESTART" Then
+            ; Repeat is on - stay on the same track
+        Else
+            ; "STOP" / "CLOSE"
+            ExitLoop
+        EndIf
+    WEnd
+
+    $g_bLocalPlaylistMode = False
 EndFunc
 
 Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAutoPlayToggle = False, $sID = "", $bLocalFile = False)
@@ -2377,6 +2518,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         $hDummySpace = GUICtrlCreateDummy()
         $hDummyEnter = GUICtrlCreateDummy()
         $hDummyN = GUICtrlCreateDummy()
+        $hDummyB = GUICtrlCreateDummy() ; "b": previous file (folder playlist only)
         $hDummyUp = GUICtrlCreateDummy()
         $hDummyDown = GUICtrlCreateDummy()
         $hDummyLeft = GUICtrlCreateDummy()
@@ -2431,9 +2573,10 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         ; "I" key: show information about the currently playing file
         $hDummyI = GUICtrlCreateDummy()
 
-        Local $aAccelPlay[48][2] = [ _
+        Local $aAccelPlay[49][2] = [ _
             ["{SPACE}", $hDummySpace], _
             ["n", $hDummyN], _ ; Next
+            ["b", $hDummyB], _ ; Previous (folder playlist only)
             ["r", $hDummyR], _ ; Repeat
             ["^r", $hDummyRemaining], _ ; Remaining time
             ["+n", $hDummyShiftN], _ ; Force Next
@@ -2835,11 +2978,20 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                 EndIf
 
             Case $hDummyN
-                If $allowAutoPlayToggle Then
+                If $g_bLocalPlaylistMode Then
+                    $sAction = "NEXT"
+                    ExitLoop
+                ElseIf $allowAutoPlayToggle Then
                     $g_bAutoPlay = Not $g_bAutoPlay
                     GUICtrlSetData($g_lblAuto, _Ternary($g_bAutoPlay, "Auto: ON", "Auto: OFF"))
                     _ReportStatus(_Ternary($g_bAutoPlay, "Auto Play Next Track ON", "Auto Play Next Track OFF"))
                     IniWrite($CONFIG_FILE, "Settings", "AutoPlay", _Ternary($g_bAutoPlay, "true", "false"))
+                EndIf
+
+            Case $hDummyB
+                If $g_bLocalPlaylistMode Then
+                    $sAction = "BACK"
+                    ExitLoop
                 EndIf
 
             Case $hDummyR

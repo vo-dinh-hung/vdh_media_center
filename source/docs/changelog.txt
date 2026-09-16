@@ -1,3 +1,12 @@
+changes for version 2.5.1
+- fix some bug in updater system.
+- add new feature for listen audio file.
+  - add file: you can listen with many format. for example: mp3, mp4, wav, ogg, m4a, etc.
+  - add folder: you can load a folder in application and join.
+- add new shortcut for listen with folder:
+  - n: next file 
+  - b: go back previous file.
+
 changes for version 2.5
 - The decompression system has been rewritten to give it a modern look.
 - We have redesigned all the combo boxes to improve accessibility for screen readers and new standards.

@@ -1,5 +1,5 @@
 app name: VDH_Media_Center
-Version: 2.5
+Version: 2.5.1
 DevelopBy: vdh productions
 This software allows you to search YouTube, download videos, or even play videos if you want. I created this software to help you conveniently watch YouTube videos without worrying about where to listen to them.
-website: https://github.com/vo-dinh-hung/vdh_Media_Center
+website: https://github.com/vo-dinh-hung/vdh_media_center
