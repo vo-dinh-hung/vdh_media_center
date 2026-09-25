@@ -12,6 +12,9 @@ Search History: Search history will be stored for convenient searching.
 Favorite Video: A list of favorite videos will appear when clicking this button. If there are no favorite videos, you will be prompted.
 Your collection: You can watch your favorite collections with the best videos.
 Watch History: Review the history of videos you've watched before.
+Listen to Audio File: You can listen to music from files on your computer.
+Add File: listen a file.
+Add Folder: listen A folder with many files inside.
 In the main interface of the software, you can press the Alt key to open the help menu. In this menu, you can view the software's information, read the readme, and contact the main developer.
 help menu:
 We have designed a help menu where you can find every valuable information
@@ -21,6 +24,9 @@ contact: Contribute ideas for software development.
 Checked for Updates: Allows users to check for software updates when new versions are available.
 Checked for Updates yt_dlp: Automatically check for updates to the yt dlp library when new versions are available.
 visit website: You can visit to know more about this project.
+view changelog: see new changelog for lated version.
+contribute: See who has contributed to this project.
+Send feedback: Please send us your feedback.
 main menu
 There are a few small options for your easy access:
 exit: you can exit the Program or press alt+f4 to close application.
@@ -60,6 +66,33 @@ control+c: Copy the youtube link with the selected time.
 alt+w: watch history
 p: see percentage of video.
 control+r: see remaining time.
+up/down arrow: increase/decrease volume
+left/right arrow: rewind/fast forward
+listen file shortcut:
+Below are the keyboard shortcuts in the music player interface (only applicable to the "listen to audio file" feature):
+listen file:
+space: play/pause
+S / D / F: Change Speed (Fast / Normal / Slow).
+home: beginning of the video
+end: end of the video
+1 through 9: Jump to 10% through 90% of the video duration.
+(Minus) / = (Equal): Decrease / Increase the seek step (seconds jumped by arrows).
+up/down arrow: increase/decrease volume
+left/right arrow: rewind/fast forward
+i: see info
+listen Folder:
+n: next file
+b: previous file
+control+home: first file
+control+end: last file
+space: play/pause
+S / D / F: Change Speed (Fast / Normal / Slow).
+home: beginning of the video
+end: end of the video
+1 through 9: Jump to 10% through 90% of the video duration.
+(Minus) / = (Equal): Decrease / Increase the seek step (seconds jumped by arrows).
+up/down arrow: increase/decrease volume
+left/right arrow: rewind/fast forward
 option menu:
 you can access in music player.
 play: activate play video.
@@ -107,6 +140,8 @@ Do nothing
 Fast Forward Interval (Seconds).
 Rewind Interval (Seconds).
 Continue watching (Resume from last position)
+Save watch history.
+Save search history.
 Download tab:
 In this tab you can customize some actions:
 download path edit box read only.
@@ -115,6 +150,8 @@ reset path to default button.
 Search tab
 In this tab you can customize search settings:
 Automatically search after voice input.
+Enable typing sounds in search box.
+select typing sound.
 Data tab
 In this tab there will be a few options related to configuration data:
 Backup Configuration.

@@ -1,3 +1,37 @@
+changes for version 2.6
+- update vlc player to version 3.0.24.
+- updating sound has been changes. thank you vodinhhoang has supported
+- The volume reduction system has been standardized to ensure it's working properly, as there have been some minor issues recently.
+- Now you can choose save or not save your search history through the settings.
+- update some library to new version:
+  - nvdaControllerClient32.dll
+  - nvdaControllerClient64.dll
+- The interface has been refined for better visibility.
+- add License] Accept dialog.
+- update deno library to version 2.97.
+- add new shorhtcut for listen with folders:
+  - control+home: First File.
+  - control+end: Last File.
+- The interface overlap issue has been fixed.
+- We have removed the following shortcuts from the music player interface (listen file audio):
+  - shift+n
+  - shift+b
+  - control+k
+  - alt+g
+  - alt+b
+  - control+t
+  - control+shift+t
+  - r
+  - control+r
+  - control+s
+  - left bracket
+  - [ right bracket
+  - control+shift+c
+  - control+shift+d
+- add send feenback in help menu.
+- Now when you press the 'n' and b key in listen audio file This will take you back to the first and Last file (This only applies to listening with folders.)
+- The i key and related elements have been removed from the YouTube music player interface.
+
 changes for version 2.5.1
 - fix some bug in updater system.
 - add new feature for listen audio file.
