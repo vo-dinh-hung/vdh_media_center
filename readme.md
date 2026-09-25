@@ -17,6 +17,8 @@ After running, an interface will appear with the following functions:
 - Your collection: You can watch your favorite collections with the best videos.
 - Watch History: Review the history of videos you've watched before.
 - Listen to Audio File: You can listen to music with files already on your computer.
+  - Add File: listen a file.
+  - Add Folder: listen A folder with many files inside.
 
 In the main interface of the software, you can press the Alt key to open the help menu. In this menu, you can view the software's information, read the readme, and contact the main developer.
 
@@ -32,6 +34,7 @@ We have designed a help menu where you can find every valuable information
 - view changelog: see new changelog of application.
 - contribute: See who has contributed to this project.
 - visit website: You can visit to know more about this project.
+- Send feedback: Please send us your feedback.
 
 ### main menu
 
@@ -77,6 +80,39 @@ We have assigned keyboard shortcuts for you to easily use the software and be fl
 - alt+w: watch history.
 - p: see percentage of video.
 - control+r: see remaining time.
+- up/down arrow: increase/decrease volume
+- left/right arrow: rewind/fast forward
+
+### listen file shortcut:
+
+Below are the keyboard shortcuts in the music player interface (only applicable to the "listen to audio file" feature):
+
+## listen file:
+
+- space: play/pause
+- S / D / F: Change Speed (Fast / Normal / Slow).
+- home: beginning of the video
+- end: end of the video
+- 1 through 9: Jump to 10% through 90% of the video duration.
+- (Minus) / = (Equal): Decrease / Increase the seek step (seconds jumped by arrows).
+- up/down arrow: increase/decrease volume
+- left/right arrow: rewind/fast forward
+- i: see info
+
+## listen Folder:
+
+- n: next file
+- b: previous file
+- control+home: first file
+- control+end: last file
+- space: play/pause
+- S / D / F: Change Speed (Fast / Normal / Slow).
+- home: beginning of the video
+- end: end of the video
+- 1 through 9: Jump to 10% through 90% of the video duration.
+- (Minus) / = (Equal): Decrease / Increase the seek step (seconds jumped by arrows).
+- up/down arrow: increase/decrease volume
+- left/right arrow: rewind/fast forward
 
 ### settings
 
@@ -89,7 +125,6 @@ This tab will give you a few options:
 - Automatically check for updates on startup.
 - Start program automatically after login.
 - Automatically detect YouTube links in clipboard on launch.
-
 
 ## Player  tab
 
@@ -108,13 +143,16 @@ In this tab there will be a number of options used for the music player:
 - Fast Forward Interval (Seconds).
 - Rewind Interval (Seconds).
 - Continue watching (Resume from last position)
+- Save watch history.
+- Save search history.
 
 ## Search tab
 
 In this tab you can customize search settings:
 
 - Automatically search after voice input.
-- Enable typing sounds in search.
+- Enable typing sounds in search box.
+- select typing sound.
 
 ## Data  tab
 
