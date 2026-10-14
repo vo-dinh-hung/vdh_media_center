@@ -62,12 +62,13 @@ Right Bracket ]: End selection.
 alt+o: go to option menu (Use only in music player).
 control+s: Save selection as.
 control+shift+d: Video Description...
-control+c: Copy the youtube link with the selected time.
+left/right arrow: rewind/fast forward
 alt+w: watch history
 p: see percentage of video.
 control+r: see remaining time.
 up/down arrow: increase/decrease volume
 left/right arrow: rewind/fast forward
+control+alt+t: activate video transcript.
 listen file shortcut:
 Below are the keyboard shortcuts in the music player interface (only applicable to the "listen to audio file" feature):
 listen file:
@@ -115,6 +116,7 @@ video comments: Here you can read, copy and export files from all comments in a 
 go to time: allows you to jump to any music in a video.
 Sleep Timer: Allows you to schedule music to turn off. This feature is useful when you need quiet to rest.
 add to collection: You can add the video you're watching to your collection.
+Video Transcript: You can read what's in the video.
 Share: You can share videos with friends around you through the following supported services:
 telegram.
 facebook.
@@ -125,6 +127,7 @@ This tab will give you a few options:
 Automatically check for updates on startup.
 Start program automatically after login.
 Automatically detect YouTube links in clipboard on launch.
+Automatically check for yt-dlp updates on startup.
 Player tab
 In this tab there will be a number of options used for the music player:
 Audio Output Device.
@@ -142,6 +145,9 @@ Rewind Interval (Seconds).
 Continue watching (Resume from last position)
 Save watch history.
 Save search history.
+Play button action:
+Play with the computer's default player
+Play with the application's default player
 Download tab:
 In this tab you can customize some actions:
 download path edit box read only.

@@ -245,8 +245,10 @@ For $iMsg In $aGlobalMsgs
     DllCall("user32.dll", "bool", "ChangeWindowMessageFilter", "uint", $iMsg, "dword", 1)
 Next
 
-Global $version = "2.6"
+Global $version = "2.7"
 Global $YT_DLP_PATH = @ScriptDir & "\lib\yt-dlp.exe"
+; Tiện ích lấy phụ đề YouTube (được đóng gói từ youtube_transcript.py).
+Global $YT_TRANSCRIPT_EXE = @ScriptDir & "\lib\youtube_transcript.exe"
 
 ; --- JS runtime cho yt-dlp (khắc phục cảnh báo "No supported JavaScript runtime could be found") ---
 ; yt-dlp cần một runtime JS (deno hoặc node) để giải mã một số định dạng của YouTube.
@@ -304,6 +306,11 @@ Global $cbo_dl_format, $btn_start_dl, $openbtn, $paste
 Global $linkedit, $play_btn, $online_play_btn
 Global $btn_Menu_Audio
 Global $g_sSupportedAudioExts = ".mp3;.m4a;.wav;.ogg;.flac;.aac;.wma;.opus;.mp4;"
+; Các định dạng mà tính năng Download thực sự tạo ra (khớp với $cbo_dl_format/$cboFormat:
+; M4A, MP3, MP4, OGG, WAV, WebM), cộng thêm file dở dang do yt-dlp sinh ra trong lúc tải
+; (*.part, *.ytdl). Dùng để lọc khi dọn file mới khi người dùng hủy tải, tránh xóa nhầm
+; các file định dạng khác không phải do lần tải đó tạo ra.
+Global $g_sDownloadSupportedExts = ".mp3;.wav;.m4a;.ogg;.mp4;.webm;.part;.ytdl;"
 Global $inp_search, $btn_search_go, $lst_results, $btn_search_hist
 Global $hDummyLoadMore = 0
 Global $hCurrentSubGui = 0
@@ -314,7 +321,7 @@ Global $hSearchHistoryGui = 0
 Global $hPlayGui = 0, $oVLCCtrl = 0
 Global $g_hStatusLabel = 0, $g_lblPlayerInfo = 0, $g_lblAuto = 0, $g_lblRepeat = 0
 Global $g_lblTimeInfo = 0, $g_sLastTimeInfo = "", $g_lblHint = 0 ; on-screen state/position line and key hint in the player window
-Global $menu_item_download = -1, $menu_item_channel = -1, $menu_item_browser = -1, $menu_item_copy = -1, $menu_item_desc = -1, $menu_item_comments = -1, $menu_item_fav = -1, $menu_item_goto = -1, $menu_share_telegram = -1, $menu_share_facebook = -1, $menu_item_sleeptimer = -1, $menu_item_fileinfo = -1
+Global $menu_item_download = -1, $menu_item_channel = -1, $menu_item_browser = -1, $menu_item_copy = -1, $menu_item_desc = -1, $menu_item_comments = -1, $menu_item_transcript = -1, $menu_item_fav = -1, $menu_item_goto = -1, $menu_share_telegram = -1, $menu_share_facebook = -1, $menu_item_sleeptimer = -1, $menu_item_fileinfo = -1
 Global $menu_item_add_col = -1, $menu_item_remove_col = -1
 Global $g_fSelectionStart = -1, $g_fSelectionEnd = -1
 Global $g_fPitch = 1.0
@@ -323,10 +330,12 @@ Global $g_iOriginalX, $g_iOriginalY, $g_iOriginalW, $g_iOriginalH
 Global $hDummySpace, $hDummyEnter, $hDummyN, $hDummyUp, $hDummyDown, $hDummyLeft, $hDummyRight, $hDummyAltO
 Global $hDummyCtrlLeft, $hDummyCtrlRight, $hDummyCtrlT, $hDummyCtrlShiftT, $hDummyHome, $hDummyEnd
 Global $hDummyI
+Global $hDummyC
 Global $hDummy1, $hDummy2, $hDummy3, $hDummy4, $hDummy5, $hDummy6, $hDummy7, $hDummy8, $hDummy9, $hDummyP
-Global $hDummyR, $hDummyRemaining, $hDummyShiftN, $hDummyShiftB, $hDummyCtrlW, $hDummyMinus, $hDummyEqual, $hDummyS, $hDummyD, $hDummyF, $hDummyCtrlShiftE, $hDummyEsc, $hDummyG, $hDummyApps, $hDummyBracketLeft, $hDummyBracketRight, $hDummyCtrlS, $hDummyCtrlK, $hDummyCtrlC, $hDummyCtrlShiftC, $hDummyCtrlShiftD, $hDummyAltB, $hDummyAltG
+Global $hDummyR, $hDummyRemaining, $hDummyShiftN, $hDummyShiftB, $hDummyCtrlW, $hDummyMinus, $hDummyEqual, $hDummyS, $hDummyD, $hDummyF, $hDummyCtrlShiftE, $hDummyEsc, $hDummyG, $hDummyApps, $hDummyBracketLeft, $hDummyBracketRight, $hDummyCtrlS, $hDummyCtrlK, $hDummyCtrlC, $hDummyCtrlShiftC, $hDummyCtrlShiftD, $hDummyAltB, $hDummyAltG, $hDummyAltLeft, $hDummyAltRight
 Global $hDummyB ; "b" key: previous track (only active while a folder playlist is loaded)
 Global $hDummyCtrlHome, $hDummyCtrlEnd ; Ctrl+Home/Ctrl+End: first/last track (folder playlist only)
+Global $hDummyCtrlAltT ; Ctrl+Alt+T: mở Video Transcript
 Global $g_aLocalPlaylist[1] = [""]
 Global $g_iLocalPlaylistCount = 0
 Global $g_bLocalPlaylistMode = False ; True only while playing a folder-loaded playlist (enables n/b navigation)
@@ -426,6 +435,7 @@ Global $g_bSkipSilence = IniRead($CONFIG_FILE, "Settings", "SkipSilence", "false
 Global $g_iAnnouncementMode = Int(IniRead($CONFIG_FILE, "Settings", "AnnouncementMode", "0"))
 Global $g_sAudioDeviceID = IniRead($CONFIG_FILE, "Settings", "AudioDeviceID", "")
 Global $g_iAfterVideoAction = Int(IniRead($CONFIG_FILE, "Settings", "AfterVideoAction", "2")) ; 0: Close, 1: Replay, 2: Do nothing
+Global $g_iPlayAction = Int(IniRead($CONFIG_FILE, "Settings", "PlayAction", "0")) ; Nút Play trong hộp thoại tải xong: 0 = trình phát mặc định của máy tính, 1 = trình phát mặc định của ứng dụng
 Global $g_bAutoDetectLink = IniRead($CONFIG_FILE, "Settings", "AutoDetectLink", "true") == "true"
 Global $g_bVoiceAutoSearch = IniRead($CONFIG_FILE, "Settings", "VoiceAutoSearch", "true") == "true"
 Global $g_bAutoPlay = IniRead($CONFIG_FILE, "Settings", "AutoPlay", "false") == "true"
@@ -469,7 +479,13 @@ While TimerDiff($hStartTimer) < 500
 WEnd
 GUIDelete($lding)
 
-$mainform = GUICreate("VDHMediaCenter version" & $version, 300, 355)
+; Khong co $WS_SYSMENU => an nut Close (X), Minimize va menu he thong tren thanh tieu de.
+; Thoat ung dung bang Preferences > Exit hoac Ctrl+W.
+; Giu $WS_SYSMENU de thanh menu (Preferences/Help) dieu huong Trai/Phai binh thuong;
+; nut Close (X) bi vo hieu hoa ngay duoi day thay vi bo han style.
+$mainform = GUICreate("VDHMediaCenter version" & $version, 300, 355, -1, -1, BitOR($WS_CAPTION, $WS_POPUP, $WS_SYSMENU))
+Local $hSysMenuMain = DllCall("user32.dll", "handle", "GetSystemMenu", "hwnd", $mainform, "bool", 0)
+If Not @error And IsArray($hSysMenuMain) Then DllCall("user32.dll", "bool", "EnableMenuItem", "handle", $hSysMenuMain[0], "uint", 0xF060, "uint", 0x0001) ; SC_CLOSE, MF_BYCOMMAND|MF_GRAYED
 GUISetBkColor($COLOR_BLUE)
 GUISetFont(9, 400, 0, "Segoe UI")
 
@@ -528,13 +544,16 @@ Func _RunSubWindow($sFunc)
     If $g_bSubWindowOpen Then Return ; da co mot cua so con dang mo
     $g_bSubWindowOpen = True
 
-    ; Vo hieu hoa + an giao dien chinh de no khong the nhan phim/chuot nua
-    If IsHWnd($mainform) Then
-        GUISetState(@SW_DISABLE, $mainform)
-        GUISetState(@SW_HIDE, $mainform)
-    EndIf
+    ; KHONG an/vo hieu hoa giao dien chinh ngay luc nay. Neu an truoc khi cua so con
+    ; kip tao, Windows se chuyen focus sang ung dung khac, khien nguoi dung phai cho
+    ; (man hinh trong, NVDA doc cua so khac) roi cua so con moi hien len.
+    ; Thay vao do, cua so con duoc tao va hien ra truoc; giao dien chinh se duoc an
+    ; ngay sau do bang _HideMainDeferred() (chay ngam luc vong lap cua so con hoat dong).
+    AdlibRegister("_HideMainDeferred", 100)
 
     Call($sFunc)
+
+    AdlibUnRegister("_HideMainDeferred")
 
     ; Tra lai giao dien chinh
     If IsHWnd($mainform) Then
@@ -545,6 +564,19 @@ Func _RunSubWindow($sFunc)
     EndIf
 
     $g_bSubWindowOpen = False
+EndFunc
+
+; Chay ngam sau khi cua so con da hien: luc nay moi vo hieu hoa + an giao dien chinh.
+Func _HideMainDeferred()
+    AdlibUnRegister("_HideMainDeferred")
+    If Not $g_bSubWindowOpen Then Return
+    If IsHWnd($mainform) Then
+        ; Luu cua so GUI hien hanh de tranh cac control dang tao do bi gan nham vao giao dien chinh
+        Local $hPrevGui = GUISwitch($mainform)
+        GUISetState(@SW_DISABLE, $mainform)
+        GUISetState(@SW_HIDE, $mainform)
+        If IsHWnd($hPrevGui) And $hPrevGui <> $mainform Then GUISwitch($hPrevGui)
+    EndIf
 EndFunc
 
 ; Thay cho GUIGetMsg() trong vong lap cua cua so con.
@@ -602,7 +634,7 @@ Func _ShowDirectLinkPlayer()
                     SoundPlay(@ScriptDir & "\sounds\ok.wav")
                     
                     ; Giảm trì hoãn để phản hồi nhanh hơn
-                    Sleep(200)
+                    Sleep(30)
                     
                     _PlayInternal($sUrl, "Direct Link Player", False, $hLoading, False, "")
                     GUISetState(@SW_SHOW, $mainform)
@@ -678,7 +710,18 @@ While 1
             SoundPlay(@ScriptDir & "\sounds\exit.wav", 1)
             ProcessClose("comments.exe")
             ProcessClose("description.exe")
-            _VLC_Cleanup()
+            ProcessClose("voice_search.exe")
+            ProcessClose("youtube_transcript.exe")
+            ; KHÔNG gọi _VLC_Cleanup() ở đây nữa: hàm đó gọi libvlc_media_player_stop
+            ; rồi libvlc_release rồi DllClose(libvlc.dll) - yêu cầu VLC "dọn dẹp đúng
+            ; chuẩn", tức phải join hết các luồng nội bộ (mạng, giải mã, âm thanh) trước
+            ; khi được unload. Nếu đang phát một luồng mạng (YouTube...), bước dừng này
+            ; có thể bị treo vài giây (lỗi khá phổ biến của libvlc_media_player_stop với
+            ; network stream) - đây chính là lý do Alt+F4 gần đây bị chậm/đứng hình một
+            ; lúc mới đóng hẳn. Vì app sắp Exit() hoàn toàn ngay sau đó, việc "dọn sạch"
+            ; này không cần thiết - Windows sẽ tự thu hồi toàn bộ handle/DLL/luồng ngay
+            ; khi tiến trình kết thúc, nên bỏ qua bước này giúp đóng app nhanh và ổn định
+            ; như trước, bất kể đang phát gì.
             Exit
 
         Case $btn_Menu_DL
@@ -767,11 +810,39 @@ Func _CheckUpdatesSilently()
     EndIf
 EndFunc
 
+; Diệt TOÀN BỘ cây tiến trình bắt đầu từ $iPid (dùng "taskkill /F /T /PID").
+; Lý do cần hàm riêng: yt-dlp thường tự sinh ra tiến trình ffmpeg con (để ghép
+; audio/video hoặc convert sang định dạng đích như mp3) như một tiến trình Windows
+; ĐỘC LẬP. Nếu chỉ ProcessClose($iPid) (diệt mỗi yt-dlp.exe) thì ffmpeg con này
+; KHÔNG bị ảnh hưởng - nó vẫn tiếp tục chạy mồ côi và tiếp tục ghi vào file .mp3/
+; .m4a/... dù người dùng đã bấm Yes để hủy. Đây chính là nguyên nhân file tải vẫn
+; "tiếp tục" sau khi hủy và không xóa được (file đang bị ffmpeg giữ/khóa).
+; "taskkill /T" diệt cả tiến trình cha lẫn mọi tiến trình con của nó theo đúng cây
+; tiến trình thật (không đoán tên), nên đáng tin cậy hơn nhiều so với việc gọi
+; ProcessClose("ffmpeg.exe") theo tên (cách cũ), vốn có thể: (1) trễ nhịp - nếu
+; ffmpeg chưa kịp khởi động tại đúng thời điểm gọi thì sẽ không bị diệt và tiếp tục
+; sống sót, hoặc (2) diệt nhầm một tiến trình ffmpeg.exe KHÁC đang chạy cho việc
+; khác trong app (ví dụ ffmpeg quét khoảng lặng của tính năng Skip Silence).
+; Hàm này CHỜ cho đến khi taskkill thực sự chạy xong và xác nhận $iPid đã thoát
+; hẳn, trước khi trả về - để bước xóa file phía sau không bị tranh chấp khóa file.
+Func _KillProcessTree($iPid)
+    If $iPid = 0 Then Return
+    Local $iTaskKillPid = Run(@ComSpec & ' /c taskkill /F /T /PID ' & $iPid, "", @SW_HIDE)
+    ProcessWaitClose($iTaskKillPid, 5) ; Đợi lệnh taskkill tự nó chạy xong (thường gần như tức thì)
+    ProcessWaitClose($iPid, 3) ; Xác nhận tiến trình chính (yt-dlp) đã thực sự thoát hẳn
+    If ProcessExists($iPid) Then ProcessClose($iPid) ; Phòng hờ cực hiếm: vẫn còn sống -> thử lại lần nữa
+EndFunc
+
 ; Chạy lệnh tải xuống (yt-dlp) với cửa sổ console ẩn.
 ; Không đọc luồng xuất qua pipe (tránh rủi ro treo tiến trình nếu bộ đệm đầy),
 ; thay vào đó hiển thị thanh tiến trình dạng "đang chạy" kèm thời gian đã trôi qua.
-; Trả về True nếu tải xong, False nếu người dùng huỷ (đóng cửa sổ).
-Func _RunDownloadWithProgress($sCmd, $idProgress = -1, $idLabel = -1)
+; Khi người dùng đóng cửa sổ (hủy) sẽ có hộp thoại xác nhận; nếu chọn Yes và có
+; truyền $sWatchDir, file đang tải dở (*.part, *.ytdl) trong thư mục đó sẽ bị xóa.
+; Trả về True nếu tải xong, False nếu người dùng huỷ (đã xác nhận).
+Func _RunDownloadWithProgress($sCmd, $idProgress = -1, $idLabel = -1, $sWatchDir = "")
+    Local $sFilesBefore = ""
+    If $sWatchDir <> "" Then $sFilesBefore = _ListFilesRecursive($sWatchDir) ; "Trước ảnh" để biết file nào mới sinh ra
+
     Local $iPid = Run($sCmd, @ScriptDir, @SW_HIDE)
     Local $iStart = TimerInit()
     Local $iFakePct = 0
@@ -789,8 +860,18 @@ Func _RunDownloadWithProgress($sCmd, $idProgress = -1, $idLabel = -1)
         EndIf
 
         If GUIGetMsg() = $GUI_EVENT_CLOSE Then
-            ProcessClose($iPid)
-            Return False
+            Local $sConfirmMsg = "Are you sure you want to cancel?"
+            If $sWatchDir <> "" Then $sConfirmMsg &= @CRLF & @CRLF & "The file currently being downloaded will be deleted."
+            Local $iConfirm = MsgBox(4 + 32 + 256, "Cancel", $sConfirmMsg) ; Yes/No, question icon, default = Yes
+            If $iConfirm = 6 Then ; IDYES
+                ; Diệt cả cây tiến trình (yt-dlp + ffmpeg con nếu có) và đợi thoát hẳn
+                ; trước khi xóa file, để tránh trường hợp ffmpeg con vẫn sống sót và
+                ; tiếp tục ghi vào file .mp3/... sau khi đã hủy (xem _KillProcessTree).
+                _KillProcessTree($iPid)
+                If $sWatchDir <> "" Then _DeleteNewFiles($sWatchDir, $sFilesBefore)
+                Return False
+            EndIf
+            ; IDNO: tiếp tục tải, không hủy
         EndIf
         Sleep(150)
     WEnd
@@ -800,8 +881,271 @@ Func _RunDownloadWithProgress($sCmd, $idProgress = -1, $idLabel = -1)
     Return True
 EndFunc
 
+; Hộp thoại tiến trình dùng chung cho các tác vụ chạy nền (Video Transcript, Download...).
+; Hiển thị một cửa sổ riêng có nhãn + thanh tiến trình + nút Hủy, thay vì để lại
+; giao diện bị vô hiệu hóa/trống rỗng hoặc chạy ẩn một cửa sổ console.
+; Khi người dùng bấm Hủy sẽ có hộp thoại xác nhận; nếu chọn Yes và có truyền
+; $sWatchDir, các file tải dở (*.part, *.ytdl) trong thư mục đó sẽ bị xóa.
+; Trả về True nếu tiến trình chạy xong, False nếu người dùng hủy (đã xác nhận).
+Func _RunTaskWithProgressDialog($sCmd, $sTitle, $sLabel, ByRef $sStdOut, ByRef $sStdErr, $hParent = 0, $sWatchDir = "")
+    Local $hGui
+    If $hParent <> 0 And IsHWnd($hParent) Then
+        $hGui = GUICreate($sTitle, 380, 135, -1, -1, -1, -1, $hParent)
+    Else
+        $hGui = GUICreate($sTitle, 380, 135)
+    EndIf
+    GUISetBkColor($COLOR_BLUE, $hGui)
+
+    GUICtrlCreateLabel($sLabel, 10, 15, 360, 20, $SS_CENTER)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $idProgress = GUICtrlCreateProgress(10, 45, 360, 20)
+    Local $idStatus = GUICtrlCreateLabel("", 10, 70, 360, 16, $SS_CENTER)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $idCancel = GUICtrlCreateButton("Cancel (Esc)", 130, 96, 120, 28)
+
+    Local $hDummyEscTask = GUICtrlCreateDummy()
+    Local $aAccelTask[1][2] = [["{ESC}", $hDummyEscTask]]
+    GUISetAccelerators($aAccelTask, $hGui)
+
+    GUISetState(@SW_SHOW, $hGui)
+    _AllowUIPI($hGui)
+
+    Local $sFilesBefore = ""
+    If $sWatchDir <> "" Then $sFilesBefore = _ListFilesRecursive($sWatchDir) ; "Trước ảnh" để biết file nào mới sinh ra
+
+    Local $iPid = Run($sCmd, @ScriptDir, @SW_HIDE, $STDOUT_CHILD + $STDERR_CHILD)
+    Local $iStart = TimerInit()
+    Local $iFakePct = 0
+    Local $bCancelled = False
+
+    While ProcessExists($iPid)
+        $sStdOut &= StdoutRead($iPid)
+        $sStdErr &= StderrRead($iPid)
+
+        $iFakePct += 2
+        If $iFakePct > 100 Then $iFakePct = 0
+        GUICtrlSetData($idProgress, $iFakePct)
+        Local $iElapsed = Int(TimerDiff($iStart) / 1000)
+        GUICtrlSetData($idStatus, $iElapsed & "s")
+
+        Local $iMsg = _GuiMsg($hGui)
+        If $iMsg = $GUI_EVENT_CLOSE Or $iMsg = $idCancel Or $iMsg = $hDummyEscTask Then
+            Local $sConfirmMsg = "Are you sure you want to cancel?"
+            If $sWatchDir <> "" Then $sConfirmMsg &= @CRLF & @CRLF & "The file currently being downloaded will be deleted."
+            Local $iConfirm = MsgBox(4 + 32 + 256, "Cancel", $sConfirmMsg, 0, $hGui) ; Yes/No, question icon, default = Yes
+            If $iConfirm = 6 Then ; IDYES
+                ; Diệt cả cây tiến trình (yt-dlp + ffmpeg con nếu có) và đợi thoát hẳn
+                ; trước khi xóa file, để tránh trường hợp ffmpeg con vẫn sống sót và
+                ; tiếp tục ghi vào file .mp3/... sau khi đã hủy (xem _KillProcessTree).
+                _KillProcessTree($iPid)
+                If $sWatchDir <> "" Then _DeleteNewFiles($sWatchDir, $sFilesBefore)
+                $bCancelled = True
+                ExitLoop
+            EndIf
+            ; IDNO: tiếp tục chạy, không hủy
+        EndIf
+        Sleep(150)
+    WEnd
+
+    $sStdOut &= StdoutRead($iPid)
+    $sStdErr &= StderrRead($iPid)
+
+    If Not $bCancelled Then
+        GUICtrlSetData($idProgress, 100)
+        GUICtrlSetData($idStatus, "Hoàn tất!")
+        Sleep(200)
+    EndIf
+
+    GUIDelete($hGui)
+    Return Not $bCancelled
+EndFunc
+
+; Trả về mảng các file MỚI xuất hiện trong $sDir kể từ lúc chụp "trước ảnh" $sFilesBefore
+; (lấy từ _ListFilesRecursive), chỉ tính các định dạng Download tạo ra (bỏ *.part/*.ytdl).
+; Mảng được sắp theo thứ tự bảng chữ cái; mảng rỗng (UBound = 0) nếu không có file mới.
+Func _GetNewDownloadedFiles($sDir, $sFilesBefore)
+    Local $aResult[0]
+    Local $aAfter = StringSplit(_ListFilesRecursive($sDir), "|", 2)
+    If Not IsArray($aAfter) Then Return $aResult
+    Local $iCount = 0
+    For $i = 0 To UBound($aAfter) - 1
+        Local $sF = $aAfter[$i]
+        If $sF = "" Then ContinueLoop
+        If StringInStr($sFilesBefore, $sF & "|") Then ContinueLoop
+        Local $aExt = StringRegExp($sF, "\.([A-Za-z0-9]+)$", 3)
+        If Not IsArray($aExt) Then ContinueLoop
+        Local $sExt = "." & StringLower($aExt[0])
+        If $sExt = ".part" Or $sExt = ".ytdl" Then ContinueLoop
+        If Not StringInStr($g_sDownloadSupportedExts, $sExt & ";") Then ContinueLoop
+        $iCount += 1
+        ReDim $aResult[$iCount]
+        $aResult[$iCount - 1] = $sF
+    Next
+    If $iCount > 1 Then _ArraySort($aResult)
+    Return $aResult
+EndFunc
+
+; Hộp thoại "Tải xuống hoàn tất" dùng chung cho mọi luồng tải xuống.
+;  - Play: làm theo lựa chọn trong Settings > Player > "Play button action".
+;  - Open Download Folder: mở Explorer tại nơi chứa file vừa tải (chọn sẵn file đó).
+; $aFiles là mảng file mới vừa tải (từ _GetNewDownloadedFiles), có thể rỗng.
+Func _ShowDownloadCompleteDialog($sFolder, $aFiles, $sTitle = "Download Complete", $sMsg = "Download Complete!")
+    Local $hDlg = GUICreate($sTitle, 340, 200, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU), $WS_EX_TOPMOST)
+    GUISetBkColor($COLOR_BLUE, $hDlg)
+
+    GUICtrlCreateLabel($sMsg, 10, 15, 320, 20, $SS_CENTER)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $btn_Play = GUICtrlCreateButton("Play (Alt+P)", 40, 50, 260, 35)
+    Local $btn_OpenFolder = GUICtrlCreateButton("Open Download Folder (Alt+O)", 40, 95, 260, 35)
+    Local $btn_OK = GUICtrlCreateButton("OK", 40, 140, 260, 35)
+    GUICtrlSetState($btn_OK, $GUI_DEFBUTTON)
+
+    Local $aAccelDone[3][2] = [["!p", $btn_Play], ["!o", $btn_OpenFolder], ["{ESC}", $btn_OK]]
+    GUISetAccelerators($aAccelDone, $hDlg)
+
+    GUISetState(@SW_SHOW, $hDlg)
+    _AllowUIPI($hDlg)
+    GUICtrlSetState($btn_OK, $GUI_FOCUS)
+
+    While 1
+        Local $nMsg = _GuiMsg($hDlg)
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btn_OK
+                ExitLoop
+
+            Case $btn_OpenFolder
+                If UBound($aFiles) > 0 And FileExists($aFiles[0]) Then
+                    Run('explorer.exe /select,"' & $aFiles[0] & '"')
+                Else
+                    ShellExecute($sFolder)
+                EndIf
+
+            Case $btn_Play
+                _PlayDownloadedFiles($aFiles, $hDlg)
+        EndSwitch
+    WEnd
+    GUIDelete($hDlg)
+EndFunc
+
+; Thực hiện hành động của nút Play theo $g_iPlayAction.
+Func _PlayDownloadedFiles($aFiles, $hDlg)
+    If UBound($aFiles) = 0 Then
+        MsgBox(48, "Play", "Could not find the downloaded file to play.", 0, $hDlg)
+        Return
+    EndIf
+
+    ; Giao diện Playing đang mở (hộp thoại tải xuống được mở từ trình phát online):
+    ; không thể mở thêm một trình phát lồng bên trong, nên dùng trình phát của máy tính.
+    If $g_iPlayAction <> 1 Or IsHWnd($hPlayGui) Then
+        ShellExecute($aFiles[0])
+        Return
+    EndIf
+
+    ; Trình phát mặc định của ứng dụng: kích hoạt giao diện Playing của "Listen to Audio File"
+    GUISetState(@SW_HIDE, $hDlg)
+    If UBound($aFiles) = 1 Then
+        _PlayLocalAudioFile($aFiles[0])
+    Else
+        ; Tải nhiều file (playlist/collection): phát như một danh sách, có phím n/b
+        ReDim $g_aLocalPlaylist[UBound($aFiles)]
+        For $i = 0 To UBound($aFiles) - 1
+            $g_aLocalPlaylist[$i] = $aFiles[$i]
+        Next
+        $g_iLocalPlaylistCount = UBound($aFiles)
+        $g_bLocalPlaylistMode = True
+        _PlayLocalFolder(0)
+    EndIf
+    GUISetState(@SW_SHOW, $hDlg)
+    WinActivate($hDlg)
+EndFunc
+
+; Chụp danh sách toàn bộ file (mọi định dạng, đệ quy) hiện có trong $sDir tại một
+; thời điểm, dùng làm "trước ảnh" để so sánh sau này. Trả về chuỗi các đường dẫn
+; đầy đủ, mỗi đường dẫn kết thúc bằng "|".
+Func _ListFilesRecursive($sDir, $iDepth = 0)
+    Local $sList = ""
+    If $iDepth > 6 Or Not FileExists($sDir) Then Return $sList
+    If $iDepth = 0 Then
+        While StringRight($sDir, 1) = "\" Or StringRight($sDir, 1) = "/"
+            $sDir = StringTrimRight($sDir, 1)
+        WEnd
+    EndIf
+    Local $hSearch = FileFindFirstFile($sDir & "\*")
+    If $hSearch = -1 Then Return $sList
+    While 1
+        Local $sName = FileFindNextFile($hSearch)
+        If @error Then ExitLoop
+        If $sName = "." Or $sName = ".." Then ContinueLoop
+        Local $sFull = $sDir & "\" & $sName
+        If StringInStr(FileGetAttrib($sFull), "D") Then
+            $sList &= _ListFilesRecursive($sFull, $iDepth + 1)
+        Else
+            $sList &= $sFull & "|"
+        EndIf
+    WEnd
+    FileClose($hSearch)
+    Return $sList
+EndFunc
+
+; So sánh với "trước ảnh" $sFilesBefore (lấy từ _ListFilesRecursive) và xóa các file MỚI
+; xuất hiện trong $sDir kể từ lúc chụp, CHỈ khi đó là định dạng mà tính năng Download
+; thực sự hỗ trợ/tạo ra (xem $g_sDownloadSupportedExts: mp3, wav, m4a, ogg, mp4, webm,
+; cùng file dở dang *.part/*.ytdl của yt-dlp). File có định dạng khác (không phải do lần
+; tải vừa bị hủy sinh ra) sẽ không bị đụng tới, tránh xóa nhầm file người dùng tự thêm vào
+; thư mục trong lúc tải. Các file đã có từ trước (những lần tải trước đó đã hoàn tất)
+; cũng không bị đụng tới.
+Func _DeleteNewFiles($sDir, $sFilesBefore, $iDepth = 0)
+    If $iDepth > 6 Or Not FileExists($sDir) Then Return
+    If $iDepth = 0 Then
+        While StringRight($sDir, 1) = "\" Or StringRight($sDir, 1) = "/"
+            $sDir = StringTrimRight($sDir, 1)
+        WEnd
+    EndIf
+    Local $hSearch = FileFindFirstFile($sDir & "\*")
+    If $hSearch = -1 Then Return
+    While 1
+        Local $sName = FileFindNextFile($hSearch)
+        If @error Then ExitLoop
+        If $sName = "." Or $sName = ".." Then ContinueLoop
+        Local $sFull = $sDir & "\" & $sName
+        If StringInStr(FileGetAttrib($sFull), "D") Then
+            _DeleteNewFiles($sFull, $sFilesBefore, $iDepth + 1)
+        Else
+            If Not StringInStr($sFilesBefore, $sFull & "|") Then
+                Local $aExtMatch = StringRegExp($sName, "\.([A-Za-z0-9]+)$", 3)
+                If IsArray($aExtMatch) Then
+                    Local $sExt = "." & StringLower($aExtMatch[0])
+                    If StringInStr($g_sDownloadSupportedExts, $sExt & ";") Then
+                        _DeleteWithRetry($sFull) ; File mới, đúng định dạng Download hỗ trợ -> xóa
+                    EndIf
+                EndIf
+            EndIf
+        EndIf
+    WEnd
+    FileClose($hSearch)
+EndFunc
+
+; Xóa theo $sPattern (đường dẫn cụ thể hoặc có ký tự đại diện), thử lại tối đa
+; ~2 giây nếu file vẫn còn tồn tại (trường hợp handle chưa được hệ điều hành
+; giải phóng ngay sau khi kill tiến trình).
+Func _DeleteWithRetry($sPattern)
+    Local $i = 0
+    While $i < 16 ; ~4 giây - đủ thời gian để Windows nhả khóa file sau khi taskkill diệt tiến trình
+        FileDelete($sPattern)
+        If Not _AnyFileMatches($sPattern) Then Return
+        Sleep(250)
+        $i += 1
+    WEnd
+EndFunc
+
+Func _AnyFileMatches($sPattern)
+    Local $hFind = FileFindFirstFile($sPattern)
+    If $hFind = -1 Then Return False
+    FileClose($hFind)
+    Return True
+EndFunc
+
 Func _ShowDownloader()
-    GUISetState(@SW_HIDE, $mainform)
     $g_hGuiDL = GUICreate("Video Downloader", 400, 420)
     GUISetBkColor($COLOR_BLUE)
 
@@ -979,6 +1323,7 @@ Func _ShowDownloader()
                         EndIf
                     EndIf
 
+                    SoundPlay(@ScriptDir & "\sounds\download-started.wav") ; Âm thanh báo bắt đầu tải
                     GUICtrlSetState($btn_start_dl, $GUI_DISABLE)
                     Local $sFinalDownloadPath = $g_sDownloadPath
                     If StringStripWS($sFinalDownloadPath, 3) = "" Then $sFinalDownloadPath = @ScriptDir & "\download"
@@ -987,7 +1332,8 @@ Func _ShowDownloader()
                         $sFinalDownloadPath = StringTrimRight($sFinalDownloadPath, 1)
                     WEnd
                     Local $sCmd = $YT_DLP_EXE & ' ' & $sFmt & ' ' & $sExtraArgs & ' -P "' & $sFinalDownloadPath & '" --ffmpeg-location "' & @ScriptDir & '\lib" -o "' & $sOutTemplate & '" -- "' & $url & '"'
-                    Local $bDLDone = _RunDownloadWithProgress($sCmd, $prog_dl, $lbl_dl_status)
+                    Local $sDLSnapshot = _ListFilesRecursive($sFinalDownloadPath)
+                    Local $bDLDone = _RunDownloadWithProgress($sCmd, $prog_dl, $lbl_dl_status, $sFinalDownloadPath)
                     If Not $bDLDone Then
                         _Downloader_ToggleHotKeys(False)
                         GUIRegisterMsg($WM_ACTIVATE, "")
@@ -999,14 +1345,13 @@ Func _ShowDownloader()
                     GUICtrlSetData($lbl_dl_status, "")
                     GUICtrlSetData($prog_dl, 0)
 SoundPlay(@ScriptDir & "\sounds\download_finish.wav")
-                    MsgBox(64, "Info", "Download Complete!")
+                    _ShowDownloadCompleteDialog($sFinalDownloadPath, _GetNewDownloadedFiles($sFinalDownloadPath, $sDLSnapshot))
                 EndIf
         EndSwitch
     WEnd
 EndFunc
 
 Func _ShowPlayer()
-    GUISetState(@SW_HIDE, $mainform)
     Local $hGuiPL = GUICreate("YouTube Player", 400, 290)
     GUISetBkColor($COLOR_BLUE)
 
@@ -1059,6 +1404,68 @@ Func _ShowPlayer()
                 Else
                     online_play($input_text)
                 EndIf
+
+        EndSwitch
+    WEnd
+EndFunc
+
+; Lấy transcript qua tiện ích Python đã đóng gói. yt-dlp tải phụ đề do tác giả
+; cung cấp hoặc phụ đề tự động, ưu tiên tiếng Việt rồi tiếng Anh.
+Func _ShowYoutubeTranscript($sUrl, $hParent)
+    If Not FileExists($YT_TRANSCRIPT_EXE) Then
+        MsgBox(16, "Transcript unavailable", "Missing file:" & @CRLF & $YT_TRANSCRIPT_EXE & @CRLF & @CRLF & "Build youtube_transcript.py and copy youtube_transcript.exe to the lib folder.", 0, $hParent)
+        Return
+    EndIf
+
+    Local $sOutput = @TempDir & "\VDHTranscript_" & @AutoItPID & "_" & TimerInit() & ".txt"
+    Local $sSafeUrl = StringReplace($sUrl, '"', "")
+    Local $sCmd = '"' & $YT_TRANSCRIPT_EXE & '" --url "' & $sSafeUrl & '" --output "' & $sOutput & '"'
+
+    Local $sOut = "", $sError = ""
+    Local $bDone = _RunTaskWithProgressDialog($sCmd, "Video Transcript", "Downloading captions and creating transcript...", $sOut, $sError, $hParent)
+    If Not $bDone Then
+        ProcessClose("youtube_transcript.exe")
+        Return ; Người dùng đã hủy
+    EndIf
+
+    If Not FileExists($sOutput) Then
+        If $sError = "" Then $sError = "The video may not have captions or auto-generated captions."
+        MsgBox(16, "Transcript unavailable", $sError, 0, $hParent)
+        Return
+    EndIf
+
+    Local $hFile = FileOpen($sOutput, $FO_READ + $FO_UTF8)
+    Local $sTranscript = FileRead($hFile)
+    FileClose($hFile)
+    FileDelete($sOutput)
+    If $sTranscript = "" Then
+        MsgBox(16, "Transcript unavailable", "No readable caption text was returned.", 0, $hParent)
+        Return
+    EndIf
+
+    Local $hTranscript = GUICreate("Video transcript", 700, 560, -1, -1, -1, -1, $hParent)
+    GUISetBkColor(0xFFFFFF, $hTranscript)
+    GUICtrlCreateLabel("Transcript:", 12, 12, 675, 20)
+    Local $edtTranscript = GUICtrlCreateEdit($sTranscript, 12, 38, 675, 450, BitOR($ES_MULTILINE, $ES_AUTOVSCROLL, $ES_READONLY, $WS_VSCROLL, $WS_TABSTOP))
+    GUICtrlSetFont($edtTranscript, 11)
+    GUICtrlSetState($edtTranscript, $GUI_SHOW) ; Đảm bảo luôn hiển thị, tránh trường hợp control bị ẩn ngầm
+    ; Ô Edit chuẩn của Windows mặc định giới hạn ~32.000 ký tự nếu không được nới ra;
+    ; transcript của video dài (nhiều timestamp) rất dễ vượt mức này và bị cắt bớt âm thầm,
+    ; khiến người dùng tưởng nhầm ô bị "mất" nội dung. Bỏ giới hạn (0 = không giới hạn) để
+    ; hiển thị đầy đủ toàn bộ transcript dù dài bao nhiêu.
+    _GUICtrlEdit_SetLimitText($edtTranscript, 0)
+    Local $btnCopy = GUICtrlCreateButton("Copy transcript", 180, 505, 160, 32)
+    Local $btnClose = GUICtrlCreateButton("Close", 360, 505, 160, 32)
+    GUISetState(@SW_SHOW, $hTranscript)
+    While 1
+        Local $iMsg = _GuiMsg($hTranscript)
+        Switch $iMsg
+            Case $GUI_EVENT_CLOSE, $btnClose
+                GUIDelete($hTranscript)
+                ExitLoop
+            Case $btnCopy
+                ClipPut($sTranscript)
+                MsgBox(64, "Transcript", "Transcript copied to clipboard.", 0, $hTranscript)
         EndSwitch
     WEnd
 EndFunc
@@ -1084,7 +1491,6 @@ Func _SearchEditProc($hWnd, $iMsg, $wParam, $lParam)
 EndFunc
 
 Func _ShowSearch()
-    GUISetState(@SW_HIDE, $mainform)
     $hCurrentSubGui = GUICreate("Search", 400, 160)
     GUISetBkColor($COLOR_BLUE)
 
@@ -1273,8 +1679,6 @@ Func _AddSearchHistory($sKeyword)
 EndFunc
 
 Func _ShowSearchHistoryWindow()
-    GUISetState(@SW_HIDE, $hCurrentSubGui)
-
     $hSearchHistoryGui = GUICreate("Search History", 350, 466)
     GUISetBkColor($COLOR_BLUE)
 
@@ -1288,6 +1692,7 @@ Func _ShowSearchHistoryWindow()
     Local $btn_back = GUICtrlCreateButton("Go Back", 10, 410, 330, 30)
 
     GUISetState(@SW_SHOW, $hSearchHistoryGui)
+    GUISetState(@SW_HIDE, $hCurrentSubGui) ; an cua so cha sau khi cua so moi da hien
 
     _LoadSearchHistoryList($lst_hist)
     _GUICtrlListBox_SetCurSel($lst_hist, 0)
@@ -1386,8 +1791,6 @@ Func _SearchResults_WM_COMMAND($hWnd, $iMsg, $wParam, $lParam)
 EndFunc
 
 Func _ShowSearchResultsWindow($sKeyword, $sFilter = "No Filter")
-    GUISetState(@SW_HIDE, $hCurrentSubGui)
-
     $hResultsGui = GUICreate("Search Results", 400, 472)
     GUISetBkColor($COLOR_BLUE)
     GUICtrlCreateLabel("Search results:", 10, 10, 380, 20)
@@ -1415,6 +1818,7 @@ Func _ShowSearchResultsWindow($sKeyword, $sFilter = "No Filter")
 
     $hDummyLoadMore = GUICtrlCreateDummy()
     GUISetState(@SW_SHOW, $hResultsGui)
+    GUISetState(@SW_HIDE, $hCurrentSubGui) ; an cua so cha sau khi cua so moi da hien
     GUIRegisterMsg($WM_COMMAND, "_SearchResults_WM_COMMAND")
 
     _SearchYouTube($sKeyword, False)
@@ -1577,6 +1981,7 @@ Func _SearchYouTube($sKeyword, $bAppend)
         ReDim $aSearchTypes[$iInitialCount + $aLines[0]]
         Local $iCount = $iInitialCount
 
+        _GUICtrlListBox_BeginUpdate($lst_results)
         For $i = 1 To $aLines[0]
             Local $sLine = StringStripWS($aLines[$i], 3)
             If $sLine = "" Then ContinueLoop
@@ -1695,6 +2100,7 @@ Func _SearchYouTube($sKeyword, $bAppend)
                 $iCount += 1
             EndIf
         Next
+        _GUICtrlListBox_EndUpdate($lst_results)
 
         ; Shrink arrays to actual size
         ReDim $aSearchIds[$iCount]
@@ -1745,12 +2151,12 @@ Func _ShowContextMenu($bIsFavContext = False)
 
     Local $hMenu = _GUICtrlMenu_CreatePopup()
 
-    _GUICtrlMenu_AddMenuItem($hMenu, "Play...", 1001)
+    _GUICtrlMenu_AddMenuItem($hMenu, "&Play...", 1001)
     _GUICtrlMenu_AddMenuItem($hMenu, "Play as &audio...", 1002)
-    _GUICtrlMenu_AddMenuItem($hMenu, "Download...", 1003)
-    _GUICtrlMenu_AddMenuItem($hMenu, "Go to channel...", 1004)
-    _GUICtrlMenu_AddMenuItem($hMenu, "Open in Browser...", 1005)
-    _GUICtrlMenu_AddMenuItem($hMenu, "Copy &Link...", 1006)
+    _GUICtrlMenu_AddMenuItem($hMenu, "&Download...", 1003)
+    _GUICtrlMenu_AddMenuItem($hMenu, "Go to &channel...", 1004)
+    _GUICtrlMenu_AddMenuItem($hMenu, "Open in &Browser...", 1005)
+    _GUICtrlMenu_AddMenuItem($hMenu, "Copy Lin&k...", 1006)
 
     Local $bIsInCollection = _IsVideoInAnyCollection($sID)
     _GUICtrlMenu_AddMenuItem($hMenu, _Ternary($bIsInCollection, "Remove from &Collection...", "Add to &Collection..."), 1008)
@@ -1797,7 +2203,7 @@ Func _ShowContextMenu($bIsFavContext = False)
         Case 1002
             _PlayLoop($iIndex, True) ; Audio
         Case 1003
-            _ShowDownloadDialog($aSearchIds[$iIndex + 1], $sTitle)
+            _ShowDownloadDialog($aSearchIds[$iIndex + 1], $sTitle, $hActiveGui)
         Case 1004
             _Action_GoChannel($iIndex)
         Case 1005
@@ -2097,9 +2503,13 @@ Func _PlayLoop($iCurrentIndex, $bAudioOnly = False)
     EndIf
 EndFunc
 
-Func _ShowDownloadDialog($sID, $sTitle)
+; $hParentGui (tùy chọn): cửa sổ đã mở hộp thoại này (ví dụ giao diện Playing khi tải
+; nhạc đang nghe). Truyền vào để hộp thoại Download và hộp thoại tiến trình bên trong nó
+; thuộc sở hữu (owned) của cửa sổ đó, nhờ vậy Windows sẽ tự động kích hoạt lại đúng cửa
+; sổ gốc khi hộp thoại này đóng, thay vì người dùng bị trôi dạt sang một giao diện khác.
+Func _ShowDownloadDialog($sID, $sTitle, $hParentGui = 0)
     Local $sUrl = "https://www.youtube.com/watch?v=" & $sID
-    Local $hDLGui = GUICreate("Download Options", 400, 250, -1, -1, -1, -1)
+    Local $hDLGui = GUICreate("Download Options", 400, 250, -1, -1, -1, -1, $hParentGui)
     GUISetBkColor($COLOR_BLUE)
 
     GUICtrlCreateLabel("Select Format :", 10, 20, 180, 20)
@@ -2122,10 +2532,6 @@ Func _ShowDownloadDialog($sID, $sTitle)
     GUICtrlSetState(-1, $GUI_DISABLE)
 
     Local $btn_DownloadNow = GUICtrlCreateButton("Download (Alt+D)", 10, 140, 380, 40)
-
-    Local $lbl_dlnow_status = GUICtrlCreateLabel("", 10, 190, 380, 16)
-    GUICtrlSetColor(-1, 0xFFFFFF)
-    Local $prog_dlnow = GUICtrlCreateProgress(10, 210, 380, 20)
 
     Local $hDummyEscDLNow = GUICtrlCreateDummy()
     Local $aAccelDLNow[2][2] = [["!d", $btn_DownloadNow], ["{ESC}", $hDummyEscDLNow]]
@@ -2160,12 +2566,6 @@ Func _ShowDownloadDialog($sID, $sTitle)
                 EndIf
             EndIf
 
-            GUICtrlSetState($btn_DownloadNow, $GUI_DISABLE)
-            GUICtrlSetState($cboFormat, $GUI_DISABLE)
-            GUICtrlSetState($cbo_dl_bitrate_local, $GUI_DISABLE)
-            GUICtrlSetState($chk_custom_name, $GUI_DISABLE)
-            GUICtrlSetState($cbo_name_type, $GUI_DISABLE)
-
             Local $sFmt = ""
             If StringInStr($sTxt, "MP3") Then
                 $sFmt = "-x --audio-format mp3"
@@ -2193,14 +2593,25 @@ Func _ShowDownloadDialog($sID, $sTitle)
                 $sFinalDownloadPath = StringTrimRight($sFinalDownloadPath, 1)
             WEnd
             Local $sCmd = $YT_DLP_EXE & ' ' & $sFmt & ' -P "' & $sFinalDownloadPath & '" --ffmpeg-location "' & @ScriptDir & '\lib" -o "' & $sOutTemplate & '" -- "' & $sUrl & '"'
-            Local $bDLNowDone = _RunDownloadWithProgress($sCmd, $prog_dlnow, $lbl_dlnow_status)
+
+            ; Ẩn hộp thoại tùy chọn và mở một hộp thoại tiến trình riêng thay vì
+            ; để lại giao diện tùy chọn bị vô hiệu hóa/trống rỗng.
+            SoundPlay(@ScriptDir & "\sounds\download-started.wav") ; Âm thanh báo bắt đầu tải
+            GUISetState(@SW_HIDE, $hDLGui)
+            Local $sDLOut = "", $sDLErr = ""
+            Local $sDLSnapshot2 = _ListFilesRecursive($sFinalDownloadPath)
+            Local $bDLNowDone = _RunTaskWithProgressDialog($sCmd, "Downloading", "Downloading """ & $sTitle & """...", $sDLOut, $sDLErr, $hParentGui, $sFinalDownloadPath)
             GUIDelete($hDLGui)
-            If Not $bDLNowDone Then Return
+            If Not $bDLNowDone Then
+                If IsHWnd($hParentGui) Then WinActivate($hParentGui) ; Đảm bảo quay lại đúng giao diện gốc (vd. Playing) sau khi hủy
+                Return
+            EndIf
 SoundPlay(@ScriptDir & "\sounds\download_finish.wav")
-            MsgBox(64, "Info", "Download Complete!")
+            _ShowDownloadCompleteDialog($sFinalDownloadPath, _GetNewDownloadedFiles($sFinalDownloadPath, $sDLSnapshot2))
             ExitLoop
         EndIf
     WEnd
+    If IsHWnd($hParentGui) Then WinActivate($hParentGui) ; Đảm bảo quay lại đúng giao diện gốc khi đóng bằng Esc/X
 EndFunc
 
 Func playmedia($url)
@@ -2370,6 +2781,12 @@ Func _AddSingleAudioFile()
         Return
     EndIf
 
+    _PlayLocalAudioFile($sFile)
+EndFunc
+
+; Phát MỘT file cục bộ bằng giao diện "Listen to Audio File" (không có phím n/b).
+; Dùng chung cho "Add File..." và nút Play trong hộp thoại tải xuống hoàn tất.
+Func _PlayLocalAudioFile($sFile)
     ; Get file name (without path/extension) to use as the track title
     Local $aNameMatch = StringRegExp($sFile, "([^\\\/]+)$", 3)
     Local $sTitle = (UBound($aNameMatch) > 0) ? $aNameMatch[0] : $sFile
@@ -2387,7 +2804,7 @@ Func _AddSingleAudioFile()
         GUISetBkColor(0xFFFFFF, $hLoading)
         GUISetState(@SW_SHOW, $hLoading)
         DllCall("winmm.dll", "int", "PlaySoundW", "wstr", @ScriptDir & "\sounds\loading.wav", "ptr", 0, "dword", 0x0009)
-        Sleep(200)
+        Sleep(30)
     Else
         GUICtrlSetData($g_lblPlayerInfo, "Loading audio file...")
         GUICtrlSetData($g_hStatusLabel, "Loading " & $sTitle & "...")
@@ -2469,7 +2886,7 @@ Func _PlayLocalFolder($iIndex)
             GUISetBkColor(0xFFFFFF, $hLoading)
             GUISetState(@SW_SHOW, $hLoading)
             DllCall("winmm.dll", "int", "PlaySoundW", "wstr", @ScriptDir & "\sounds\loading.wav", "ptr", 0, "dword", 0x0009)
-            Sleep(200)
+            Sleep(30)
         Else
             GUICtrlSetData($g_lblPlayerInfo, "Loading audio file...")
             GUICtrlSetData($g_hStatusLabel, "Loading " & $sTitle & "...")
@@ -2535,7 +2952,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
             $menu_item_download = GUICtrlCreateMenuItem("&Download...", $hMenu_Options)
             $menu_item_channel = GUICtrlCreateMenuItem("Go to &Channel...", $hMenu_Options)
             $menu_item_browser = GUICtrlCreateMenuItem("Open in &Browser...", $hMenu_Options)
-            $menu_item_copy = GUICtrlCreateMenuItem("Copy &Link...", $hMenu_Options)
+            $menu_item_copy = GUICtrlCreateMenuItem("Copy Lin&k...", $hMenu_Options)
 
             Local $hMenu_Share = GUICtrlCreateMenu("&Share", $hMenu_Options)
             $menu_share_telegram = GUICtrlCreateMenuItem("&Telegram", $hMenu_Share)
@@ -2543,6 +2960,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
 
             $menu_item_desc = GUICtrlCreateMenuItem("&Video Description...", $hMenu_Options)
             $menu_item_comments = GUICtrlCreateMenuItem("Video Com&ments...", $hMenu_Options)
+            $menu_item_transcript = GUICtrlCreateMenuItem("Video &Transcript... (Ctrl+Alt+T)", $hMenu_Options)
 
             Local $sFavText = _Ternary(_IsFavorite($sID), "&Remove from Favorite...", "Add to &Favorite...")
             $menu_item_fav = GUICtrlCreateMenuItem($sFavText, $hMenu_Options)
@@ -2555,12 +2973,12 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                 $menu_item_remove_col = -1
             EndIf
 
-            $menu_item_goto = GUICtrlCreateMenuItem("Go to &Time... (Ctrl+G)", $hMenu_Options)
+            $menu_item_goto = GUICtrlCreateMenuItem("&Go to Time... (Ctrl+G)", $hMenu_Options)
             $menu_item_fileinfo = -1 ; File Information removed from the online listening interface
 
             ; NEW FEATURE Tính năng Sleep Timer vào Menu
             GUICtrlCreateMenuItem("", $hMenu_Options) ; Separator
-            $menu_item_sleeptimer = GUICtrlCreateMenuItem("S&leep Timer...", $hMenu_Options)
+            $menu_item_sleeptimer = GUICtrlCreateMenuItem("Sleep T&imer...", $hMenu_Options)
 
             ; Vẽ lại thanh menu để đảm bảo hiển thị
             _GUICtrlMenu_DrawMenuBar($hPlayGui)
@@ -2573,6 +2991,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
             $menu_share_facebook = -1
             $menu_item_desc = -1
             $menu_item_comments = -1
+            $menu_item_transcript = -1
             $menu_item_fav = -1
             $menu_item_add_col = -1
             $menu_item_remove_col = -1
@@ -2665,6 +3084,8 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
 
         $hDummyAltB = GUICtrlCreateDummy() ; Alt+B: Open Browser
         $hDummyAltG = GUICtrlCreateDummy() ; Alt+G: Go Channel
+        $hDummyAltLeft = GUICtrlCreateDummy() ; Alt+Left: Rewind 1 minute
+        $hDummyAltRight = GUICtrlCreateDummy() ; Alt+Right: Forward 1 minute
 
         ; New hotkeys for selection and actions
         $hDummyBracketLeft = GUICtrlCreateDummy()
@@ -2681,11 +3102,17 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         ; "I" key: show information about the currently playing file
         $hDummyI = GUICtrlCreateDummy()
 
+        ; "C" key: copy the title of the current track to the clipboard (no dialog)
+        $hDummyC = GUICtrlCreateDummy()
+
         ; Ctrl+Home / Ctrl+End: jump to first/last track (folder playlist only)
         $hDummyCtrlHome = GUICtrlCreateDummy()
         $hDummyCtrlEnd = GUICtrlCreateDummy()
 
-        Local $aAccelPlay[51][2] = [ _
+        ; Ctrl+Alt+T: mở Video Transcript
+        $hDummyCtrlAltT = GUICtrlCreateDummy()
+
+        Local $aAccelPlay[55][2] = [ _
             ["{SPACE}", $hDummySpace], _
             ["n", $hDummyN], _ ; Next
             ["b", $hDummyB], _ ; Previous (folder playlist only)
@@ -2735,8 +3162,12 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
             ["{APPSKEY}", $hDummyApps], _  ; Bắt phím Menu chuột phải và ném vào hư không
             ["+{F10}", $hDummyApps], _     ; Bắt phím Shift+F10 và ném vào hư không
             ["i", $hDummyI], _             ; Show file information
+            ["c", $hDummyC], _             ; Copy current track title
             ["^{HOME}", $hDummyCtrlHome], _ ; First File (folder playlist only)
-            ["^{END}", $hDummyCtrlEnd] _    ; Last File (folder playlist only)
+            ["^{END}", $hDummyCtrlEnd], _   ; Last File (folder playlist only)
+            ["^!t", $hDummyCtrlAltT], _     ; Ctrl+Alt+T: Video Transcript
+            ["!{LEFT}", $hDummyAltLeft], _  ; Alt+Left: Rewind 1 minute
+            ["!{RIGHT}", $hDummyAltRight] _ ; Alt+Right: Forward 1 minute
         ]
         GUISetAccelerators($aAccelPlay, $hPlayGui)
     Else
@@ -2815,6 +3246,8 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
             SoundPlay(@ScriptDir & "\sounds\exit.wav", 1)
             ProcessClose("comments.exe")
             ProcessClose("description.exe")
+            ProcessClose("voice_search.exe")
+            ProcessClose("youtube_transcript.exe")
             Exit
         EndIf
 
@@ -2832,7 +3265,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                 If $bLocalFile Then
                     _ReportStatus("This file is already on your device.")
                 Else
-                    _ShowDownloadDialog($sID, $sTitle)
+                    _ShowDownloadDialog($sID, $sTitle, $hPlayGui)
                 EndIf
             Case $menu_item_channel, $hDummyAltG
                 ; Removed for local audio files (Listen to Audio File interface)
@@ -2917,6 +3350,12 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                 Else
                     Run('"' & $COMMENTS_EXE_PATH & '" "https://www.youtube.com/watch?v=' & $sID & '"')
                 EndIf
+            Case $menu_item_transcript, $hDummyCtrlAltT
+                If $bLocalFile Then
+                    _ReportStatus("Not available for local audio files.")
+                Else
+                    _ShowYoutubeTranscript("https://www.youtube.com/watch?v=" & $sID, $hPlayGui)
+                EndIf
             Case $menu_item_fav
                 If _IsFavorite($sID) Then
                     If _RemoveFavorite($sID) Then
@@ -2948,6 +3387,15 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                     Local $sPlayStateI = ($iStateI = 3) ? "playing" : "paused"
                     Local $sInfoMsg = $sFileNameI & " ;  " & _FormatTimeSpoken($fCurI) & " of " & _FormatTimeSpoken($fLenI) & ";  " & $sPlayStateI & ";"
                     _ReportStatus($sInfoMsg)
+                EndIf
+
+            Case $hDummyC
+                ; Copy the title of the track being played (silent: status message only, no dialog)
+                If $g_sCurrentVideoTitle <> "" Then
+                    ClipPut($g_sCurrentVideoTitle)
+                    _ReportStatus("Title copied")
+                Else
+                    _ReportStatus("No title to copy")
                 EndIf
 
             Case $hDummyAltO
@@ -3266,6 +3714,28 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                     _ReportStatus(_FormatTime($fTarget))
                 EndIf
 
+            Case $hDummyAltLeft, $hDummyAltRight
+                ; Alt+Left / Alt+Right: tua lùi / tới đúng 1 phút (60 giây)
+                Local $fCurPosAlt = (_VLC_Direct_GetTime() / 1000)
+                Local $fDurAlt = (_VLC_Direct_GetLength() / 1000)
+                Local $fTargetAlt
+                If $nMsg = $hDummyAltLeft Then
+                    $fTargetAlt = $fCurPosAlt - 60
+                    If $fTargetAlt < 0 Then $fTargetAlt = 0
+                Else
+                    $fTargetAlt = $fCurPosAlt + 60
+                    If $fDurAlt > 0 And $fTargetAlt > $fDurAlt Then $fTargetAlt = $fDurAlt
+                EndIf
+
+                _VLC_Direct_SetTime($fTargetAlt * 1000)
+                ControlFocus($hPlayGui, "", $g_hStatusLabel)
+
+                If $g_iAnnouncementMode == 1 And $fDurAlt > 0 Then ; Read percentage
+                    _ReportStatus(Int(($fTargetAlt / $fDurAlt) * 100) & "%")
+                Else ; Read time / Silent
+                    _ReportStatus(_FormatTime($fTargetAlt))
+                EndIf
+
             Case $hDummyEsc
                 $sAction = "CLOSE"
                 ExitLoop
@@ -3386,13 +3856,15 @@ EndFunc
 Func _GetPlayerHelpLines($bLocalFile, $bAllowAutoPlayToggle)
     Local $sHelp = "Space: Play / Pause" & @LF & _
         "Left / Right: Rewind / Forward" & @LF & _
+        "Alt+Left / Alt+Right: Rewind / Forward 1 minute" & @LF & _
         "Up / Down: Volume up / down" & @LF & _
         "Home / End: Restart / Jump near the end" & @LF & _
         "1 - 9: Jump to 10% - 90% of the track" & @LF & _
         "S / D / F: Slower / Normal / Faster" & @LF & _
         "- / =: Shorter / Longer seek step" & @LF & _
         "P: Show percentage played" & @LF & _
-        "Ctrl+G: Go to a specific time" & @LF
+        "Ctrl+G: Go to a specific time" & @LF & _
+        "C: Copy the track title" & @LF
     If $bLocalFile Then
         $sHelp &= "I: Show file information" & @LF
         If $g_bLocalPlaylistMode Then
@@ -3405,7 +3877,6 @@ Func _GetPlayerHelpLines($bLocalFile, $bAllowAutoPlayToggle)
             "Ctrl+R: Remaining time" & @LF & _
             "R: Turn repeat on / off" & @LF & _
             "Ctrl+K: Copy video link" & @LF & _
-            "Ctrl+C: Copy link at the current time" & @LF & _
             "[ and ]: Set selection start / end" & @LF & _
             "Ctrl+S: Save the selection" & @LF & _
             "Alt+B: Open in browser" & @LF & _
@@ -3813,10 +4284,11 @@ Func _Show_License_Window()
     Local $btn_Accept = GUICtrlCreateButton("&Accept", 420, 10, 80, 35)
     Local $btn_Decline = GUICtrlCreateButton("&Decline", 420, 55, 80, 35)
 
-    ; Thiết lập phím tắt Tab / Shift+Tab để xoay vòng: Ô văn bản -> Accept -> Decline
+    ; Thiết lập phím tắt Enter để chấp nhận, Tab / Shift+Tab để xoay vòng: Ô văn bản -> Accept -> Decline
+    Local $dummy_enter = GUICtrlCreateDummy()
     Local $dummy_tab = GUICtrlCreateDummy()
     Local $dummy_shifttab = GUICtrlCreateDummy()
-    Local $aAccel[2][2] = [["{TAB}", $dummy_tab], ["+{TAB}", $dummy_shifttab]]
+    Local $aAccel[3][2] = [["{ENTER}", $dummy_enter], ["{TAB}", $dummy_tab], ["+{TAB}", $dummy_shifttab]]
     GUISetAccelerators($aAccel, $gui)
 
     GUISetState(@SW_SHOW, $gui)
@@ -3830,7 +4302,7 @@ Func _Show_License_Window()
         Switch $msg
             Case $GUI_EVENT_CLOSE, $btn_Decline
                 ExitLoop
-            Case $btn_Accept
+            Case $btn_Accept, $dummy_enter
                 $bAccepted = True
                 ExitLoop
             Case $dummy_tab, $dummy_shifttab
@@ -4051,7 +4523,6 @@ EndFunc
 
 
 Func _ShowFavorites()
-    GUISetState(@SW_HIDE, $mainform)
 
     ; Increased height to 480 to match History window and fit the extra button comfortably
     $hFavoritesGui = GUICreate("Favorite Videos", 400, 526)
@@ -4155,37 +4626,47 @@ Func _ShowFavorites()
 EndFunc
 
 Func _LoadFavorites()
-    GUICtrlSetData($lst_results, "")
-    Local $hFile = FileOpen($FAVORITES_FILE, 0 + 256) ; Read as UTF-8
+    _GUICtrlListBox_BeginUpdate($lst_results)
+    _GUICtrlListBox_ResetContent($lst_results)
     Global $aSearchIds[1]
     Global $aSearchTitles[1]
     $iTotalLoaded = 0
     $bEndReached = True ; No pagination for favorites yet
 
+    ; Doc ca file 1 lan (nhanh hon FileReadLine tung dong) va dat kich thuoc mang 1 lan
+    ; thay vi ReDim sau moi dong (ReDim lap lai lam chay cham khi danh sach dai).
+    Local $sContent = ""
+    Local $hFile = FileOpen($FAVORITES_FILE, 0 + 256) ; Read as UTF-8
     If $hFile <> -1 Then
-        While 1
-            Local $sLine = FileReadLine($hFile)
-            If @error = -1 Then ExitLoop
-            Local $aParts = StringSplit($sLine, "|")
-            If $aParts[0] >= 2 Then
-                Local $sID = $aParts[1]
-                Local $sTitle = $aParts[2]
-                $iTotalLoaded += 1
-                _GUICtrlListBox_AddString($lst_results, $iTotalLoaded & ". " & $sTitle)
-                ReDim $aSearchIds[$iTotalLoaded + 1]
-                ReDim $aSearchTitles[$iTotalLoaded + 1]
-                $aSearchIds[$iTotalLoaded] = $sID
-                $aSearchTitles[$iTotalLoaded] = $sTitle
-            EndIf
-        WEnd
+        $sContent = FileRead($hFile)
         FileClose($hFile)
     EndIf
 
-
+    If $sContent <> "" Then
+        Local $aLines = StringSplit(StringStripCR($sContent), @LF, 2)
+        Local $iMax = UBound($aLines)
+        ReDim $aSearchIds[$iMax + 1]
+        ReDim $aSearchTitles[$iMax + 1]
+        Local $sBatch = ""
+        For $i = 0 To $iMax - 1
+            If $aLines[$i] = "" Then ContinueLoop
+            Local $aParts = StringSplit($aLines[$i], "|")
+            If $aParts[0] >= 2 Then
+                $iTotalLoaded += 1
+                $sBatch &= $iTotalLoaded & ". " & $aParts[2] & "|"
+                $aSearchIds[$iTotalLoaded] = $aParts[1]
+                $aSearchTitles[$iTotalLoaded] = $aParts[2]
+            EndIf
+        Next
+        ReDim $aSearchIds[$iTotalLoaded + 1]
+        ReDim $aSearchTitles[$iTotalLoaded + 1]
+        ; Them ca danh sach vao listbox trong 1 lan
+        If $sBatch <> "" Then GUICtrlSetData($lst_results, StringTrimRight($sBatch, 1))
+    EndIf
+    _GUICtrlListBox_EndUpdate($lst_results)
 EndFunc
 
 Func _ShowHistory()
-    GUISetState(@SW_HIDE, $mainform)
 
     $hHistoryGui = GUICreate("Watch History", 400, 496)
     GUISetBkColor($COLOR_BLUE)
@@ -4305,54 +4786,69 @@ Func _ShowHistory()
 EndFunc
 
 Func _LoadHistory()
-	GUICtrlSetData($lst_results, "")
-	If Not FileExists($HISTORY_FILE) Then Return
+    _GUICtrlListBox_BeginUpdate($lst_results)
+    _GUICtrlListBox_ResetContent($lst_results)
+    If Not FileExists($HISTORY_FILE) Then
+        _GUICtrlListBox_EndUpdate($lst_results)
+        Return
+    EndIf
 
-	Local $hFile = FileOpen($HISTORY_FILE, 0 + 256) ; Read as UTF-8
-	Local $sContent = FileRead($hFile)
-	FileClose($hFile)
+    Local $hFile = FileOpen($HISTORY_FILE, 0 + 256) ; Read as UTF-8
+    Local $sContent = FileRead($hFile)
+    FileClose($hFile)
 
-	If $sContent = "" Then
-		Return
-	EndIf
+    If $sContent = "" Then
+        _GUICtrlListBox_EndUpdate($lst_results)
+        Return
+    EndIf
 
-	Local $aHistoryLines = StringSplit(StringStripCR($sContent), @LF)
-	Global $aSearchIds[1]
-	Global $aSearchTitles[1]
-	Global $aSearchTypes[1] ; <-- IMPORTANT
-	$iTotalLoaded = 0
-	$bEndReached = True
+    Local $aHistoryLines = StringSplit(StringStripCR($sContent), @LF)
+    Global $aSearchIds[1]
+    Global $aSearchTitles[1]
+    Global $aSearchTypes[1] ; <-- IMPORTANT
+    $iTotalLoaded = 0
+    $bEndReached = True
 
-	; Show from newest to oldest
-	For $i = $aHistoryLines[0] To 1 Step -1
-		Local $sLine = $aHistoryLines[$i]
-		If $sLine = "" Then ContinueLoop
+    ; Dat kich thuoc mang 1 lan (thay vi ReDim sau moi dong) va them danh sach vao
+    ; listbox trong 1 lan de mo Watch History nhanh, ke ca khi lich su rat dai.
+    ReDim $aSearchIds[$aHistoryLines[0] + 1]
+    ReDim $aSearchTitles[$aHistoryLines[0] + 1]
+    ReDim $aSearchTypes[$aHistoryLines[0] + 1]
+    Local $sBatch = ""
 
-		Local $aParts = StringSplit($sLine, "|")
-		If $aParts[0] >= 2 Then
-			Local $sID = $aParts[1]
-			Local $sTitle = $aParts[2]
-			Local $sType = ($aParts[0] >= 3) ? $aParts[3] : "video" ; Read type, default to video
+    ; Show from newest to oldest
+    For $i = $aHistoryLines[0] To 1 Step -1
+        Local $sLine = $aHistoryLines[$i]
+        If $sLine = "" Then ContinueLoop
 
-			$iTotalLoaded += 1
-			Local $sDisplayTitle = $iTotalLoaded & ". " & $sTitle
-			If $sType = "playlist" Then
-				$sDisplayTitle &= " [Playlist]" ; Add a visual indicator
-			EndIf
-			_GUICtrlListBox_AddString($lst_results, $sDisplayTitle)
+        Local $aParts = StringSplit($sLine, "|")
+        If $aParts[0] >= 2 Then
+            Local $sID = $aParts[1]
+            Local $sTitle = $aParts[2]
+            Local $sType = ($aParts[0] >= 3) ? $aParts[3] : "video" ; Read type, default to video
 
-			ReDim $aSearchIds[$iTotalLoaded + 1]
-			ReDim $aSearchTitles[$iTotalLoaded + 1]
-			ReDim $aSearchTypes[$iTotalLoaded + 1] ; <-- IMPORTANT
-			$aSearchIds[$iTotalLoaded] = $sID
-			$aSearchTitles[$iTotalLoaded] = $sTitle
-			$aSearchTypes[$iTotalLoaded] = $sType ; <-- IMPORTANT
-		EndIf
-	Next
+            $iTotalLoaded += 1
+            Local $sDisplayTitle = $iTotalLoaded & ". " & $sTitle
+            If $sType = "playlist" Then
+                $sDisplayTitle &= " [Playlist]" ; Add a visual indicator
+            EndIf
+            $sBatch &= $sDisplayTitle & "|"
 
-	If $iTotalLoaded = 0 Then
-		MsgBox(64, "Info", "No history found.")
-	EndIf
+            $aSearchIds[$iTotalLoaded] = $sID
+            $aSearchTitles[$iTotalLoaded] = $sTitle
+            $aSearchTypes[$iTotalLoaded] = $sType ; <-- IMPORTANT
+        EndIf
+    Next
+
+    ReDim $aSearchIds[$iTotalLoaded + 1]
+    ReDim $aSearchTitles[$iTotalLoaded + 1]
+    ReDim $aSearchTypes[$iTotalLoaded + 1]
+    If $sBatch <> "" Then GUICtrlSetData($lst_results, StringTrimRight($sBatch, 1))
+    _GUICtrlListBox_EndUpdate($lst_results)
+
+    If $iTotalLoaded = 0 Then
+        MsgBox(64, "Info", "No history found.")
+    EndIf
 EndFunc
 
 Func _AutoDetectClipboardLink()
@@ -4910,11 +5406,14 @@ Func _Get_YTDLP_LocalVersion()
 EndFunc
 
 Func _ShowSettings()
-    $g_hSettingsGui = GUICreate("Settings", 450, 450, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU, $WS_POPUP))
+    ; Lay danh sach thiet bi am thanh TRUOC khi tao cua so (buoc nay cham, de bi tac vu ngam chen vao giua)
+    Local $aAudioDevices = _VLC_GetAudioOutputs()
+    $g_hSettingsGui = GUICreate("Settings", 450, 480, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU, $WS_POPUP))
+    GUISwitch($g_hSettingsGui)
     GUISetBkColor($COLOR_BLUE)
     GUISetFont(9, 400, 0, "Segoe UI")
 
-    $g_hSettingsTab = GUICtrlCreateTab(10, 10, 430, 350)
+    $g_hSettingsTab = GUICtrlCreateTab(10, 10, 430, 380)
 
     $g_hSettingsDummyNext = GUICtrlCreateDummy()
     $g_hSettingsDummyPrev = GUICtrlCreateDummy()
@@ -4955,7 +5454,6 @@ Func _ShowSettings()
     GUICtrlSetColor(-1, 0xFFFFFF)
     Local $cbo_OutputDevice = GUICtrlCreateCombo("", 180, 75, 230, 20, $CBS_DROPDOWNLIST)
     GUICtrlSetTip(-1, "Chọn thiết bị xuất âm thanh, dùng phím mũi tên để duyệt danh sách theo thứ tự bảng chữ cái")
-    Local $aAudioDevices = _VLC_GetAudioOutputs()
     ; Giữ "Default Audio Device" (phần tử đầu tiên) cố định ở đầu danh sách,
     ; các thiết bị còn lại được sắp xếp theo thứ tự bảng chữ cái để dễ duyệt bằng trình đọc màn hình.
     If UBound($aAudioDevices) > 2 Then
@@ -5027,6 +5525,13 @@ Func _ShowSettings()
     If $g_bSaveSearchHistory Then GUICtrlSetState(-1, $GUI_CHECKED)
     GUICtrlSetColor(-1, 0xFFFFFF)
 
+    GUICtrlCreateLabel("Play button action:", 30, 365, 110, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $cbo_PlayAction = GUICtrlCreateCombo("", 140, 360, 270, 20, $CBS_DROPDOWNLIST)
+    GUICtrlSetTip(-1, "Chọn hành động khi nhấn nút Play trong hộp thoại tải xuống hoàn tất")
+    GUICtrlSetData(-1, "Play with the computer's default player|Play with the application's default player", "Play with the computer's default player")
+    _GUICtrlComboBox_SetCurSel($cbo_PlayAction, $g_iPlayAction)
+
     ; --- Tab Download ---
     $aTabItems[2] = GUICtrlCreateTabItem("Download")
     GUICtrlCreateLabel("Download Settings", 20, 50, 410, 20)
@@ -5075,8 +5580,8 @@ Func _ShowSettings()
 
     GUICtrlCreateTabItem("") ; End Tab Control
 
-    Local $btn_Save = GUICtrlCreateButton("Ok", 120, 380, 100, 35)
-    Local $btn_Cancel = GUICtrlCreateButton("Cancel", 230, 380, 100, 35)
+    Local $btn_Save = GUICtrlCreateButton("Ok", 120, 410, 100, 35)
+    Local $btn_Cancel = GUICtrlCreateButton("Cancel", 230, 410, 100, 35)
 
     GUISetState(@SW_SHOW, $g_hSettingsGui)
 
@@ -5181,6 +5686,8 @@ Func _ShowSettings()
                 $g_bSaveSearchHistory = (GUICtrlRead($chk_SaveSearchHistory) = $GUI_CHECKED)
                 $g_iAnnouncementMode = _GUICtrlComboBox_GetCurSel($cbo_AnnouncementMode)
                 $g_iAfterVideoAction = _GUICtrlComboBox_GetCurSel($cbo_AfterAction)
+                $g_iPlayAction = _GUICtrlComboBox_GetCurSel($cbo_PlayAction)
+                If $g_iPlayAction < 0 Or $g_iPlayAction > 1 Then $g_iPlayAction = 0
 
                 $g_iFFStep = Int(GUICtrlRead($inp_FFStep))
                 $g_iRWStep = Int(GUICtrlRead($inp_RWStep))
@@ -5215,6 +5722,7 @@ Func _ShowSettings()
                 IniWrite($CONFIG_FILE, "Settings", "AutoPlay", $g_bAutoPlay ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "Repeat", $g_bRepeat ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "AfterVideoAction", String($g_iAfterVideoAction))
+                IniWrite($CONFIG_FILE, "Settings", "PlayAction", String($g_iPlayAction))
                 IniWrite($CONFIG_FILE, "Settings", "SearchFilter", $g_sSearchFilter)
                 If StringStripWS($sTempDLPath, 3) <> "" Then
                     $g_sDownloadPath = $sTempDLPath
@@ -5637,7 +6145,6 @@ Func _ShowChannelVideos($sChannelID, $sChannelTitle)
 EndFunc
 
 Func _ShowCollections()
-    GUISetState(@SW_HIDE, $mainform)
     Local $hColGui = GUICreate("Your Collections", 400, 530)
     GUISetBkColor($COLOR_BLUE)
 
@@ -5779,16 +6286,17 @@ EndFunc
 
 Func _GetCollectionCount($sName)
     Local $sFile = $COLLECTIONS_DIR & "\" & $sName & ".col"
-    If Not FileExists($sFile) Then Return 0
     Local $hFile = FileOpen($sFile, 0 + 256)
     If $hFile = -1 Then Return 0
-    Local $iCount = 0
-    While 1
-        Local $sLine = FileReadLine($hFile)
-        If @error = -1 Then ExitLoop
-        If StringInStr($sLine, "|") Then $iCount += 1
-    WEnd
+    ; Doc ca file 1 lan roi dem dong co dau "|" (nhanh hon doc tung dong)
+    Local $sContent = FileRead($hFile)
     FileClose($hFile)
+    If $sContent = "" Then Return 0
+    Local $aLines = StringSplit(StringStripCR($sContent), @LF, 2)
+    Local $iCount = 0
+    For $i = 0 To UBound($aLines) - 1
+        If StringInStr($aLines[$i], "|") Then $iCount += 1
+    Next
     Return $iCount
 EndFunc
 
@@ -5885,14 +6393,14 @@ Func _ShowCollectionItemContextMenu($sColFile, $hParent, $hList, ByRef $aIds, By
 
     Local $hMenu = _GUICtrlMenu_CreatePopup()
 
-    _GUICtrlMenu_AddMenuItem($hMenu, "Play...", 1001)
+    _GUICtrlMenu_AddMenuItem($hMenu, "&Play...", 1001)
     _GUICtrlMenu_AddMenuItem($hMenu, "Play as &audio...", 1002)
-    _GUICtrlMenu_AddMenuItem($hMenu, "Download...", 1003)
-    _GUICtrlMenu_AddMenuItem($hMenu, "Go to channel...", 1004)
-    _GUICtrlMenu_AddMenuItem($hMenu, "Open in Browser...", 1005)
-    _GUICtrlMenu_AddMenuItem($hMenu, "Copy &Link...", 1006)
+    _GUICtrlMenu_AddMenuItem($hMenu, "&Download...", 1003)
+    _GUICtrlMenu_AddMenuItem($hMenu, "Go to &channel...", 1004)
+    _GUICtrlMenu_AddMenuItem($hMenu, "Open in &Browser...", 1005)
+    _GUICtrlMenu_AddMenuItem($hMenu, "Copy Lin&k...", 1006)
     
-    _GUICtrlMenu_AddMenuItem($hMenu, "Remove from Collection", 2001)
+    _GUICtrlMenu_AddMenuItem($hMenu, "&Remove from Collection", 2001)
 
     Local $hSubMenu_Share = _GUICtrlMenu_CreatePopup()
     _GUICtrlMenu_AddMenuItem($hSubMenu_Share, "&Telegram", 1011)
@@ -5921,7 +6429,7 @@ Func _ShowCollectionItemContextMenu($sColFile, $hParent, $hList, ByRef $aIds, By
         Case 1002
             _PlayLoop($iSel, True)
         Case 1003
-            _ShowDownloadDialog($sID, $sTitle)
+            _ShowDownloadDialog($sID, $sTitle, $hParent)
         Case 1004
             _Action_GoChannel($iSel)
         Case 1005
@@ -6099,11 +6607,12 @@ Func _DownloadCollection($sColName)
     Local $prog_coll = GUICtrlCreateProgress(10, 65, 380, 20)
     GUISetState(@SW_SHOW, $hProgGui)
 
+    Local $sCollSnapshot = _ListFilesRecursive($sFinalDownloadPath)
     For $i = 1 To $iTotalItems
         _NVDA_Speak("Downloading item " & $i & " of " & $iTotalItems)
         GUICtrlSetData($lbl_coll_item, "Đang tải mục " & $i & " / " & $iTotalItems)
         Local $sCmd = $YT_DLP_EXE & ' ' & $sFmt & ' -P "' & $sFinalDownloadPath & '" --ffmpeg-location "' & @ScriptDir & '\lib" -o "%(title)s.%(ext)s" -- "' & $aLinks[$i] & '"'
-        Local $bCollDone = _RunDownloadWithProgress($sCmd, $prog_coll, $lbl_coll_status)
+        Local $bCollDone = _RunDownloadWithProgress($sCmd, $prog_coll, $lbl_coll_status, $sFinalDownloadPath)
         If Not $bCollDone Then
             GUIDelete($hProgGui)
             Return
@@ -6111,7 +6620,7 @@ Func _DownloadCollection($sColName)
     Next
     GUIDelete($hProgGui)
 SoundPlay(@ScriptDir & "\sounds\download_finish.wav")
-    MsgBox(64, "Success", "Collection download complete!")
+    _ShowDownloadCompleteDialog($sFinalDownloadPath, _GetNewDownloadedFiles($sFinalDownloadPath, $sCollSnapshot), "Success", "Collection download complete!")
 EndFunc
 
 Func _AddtoCollection($sID, $sTitle)

@@ -1,3 +1,17 @@
+changes for version 2.7
+- Now, you can fast-forward videos in 1-minute increments using the Alt+Left and Alt+Right arrow keys.
+- add coppy title to clipboard. press c key to activate.
+- now you can cancel the download process in the download dialog box.
+- fix some bug in the interface.
+- A new option has been added to the settings with the following choices:
+  - Play with the computer's default player: Allows you to listen to music using the default player.
+  - Play with the application's default player: Allows listening to music through the software.
+- The download complete dialog box has been redesigned with the following actions:
+  - play button: Listen to music using actions selected in the settings.
+  - open download folder button: you can open folder after download.
+- updated the library and ffmpeg to the latest version.
+- Performance has improved.
+
 changes for version 2.6
 - update vlc player to version 3.0.24.
 - updating sound has been changes. thank you vodinhhoang has supported

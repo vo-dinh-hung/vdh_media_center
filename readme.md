@@ -82,6 +82,7 @@ We have assigned keyboard shortcuts for you to easily use the software and be fl
 - control+r: see remaining time.
 - up/down arrow: increase/decrease volume
 - left/right arrow: rewind/fast forward
+- control+alt+t: activate video transcript.
 
 ### listen file shortcut:
 
@@ -125,6 +126,7 @@ This tab will give you a few options:
 - Automatically check for updates on startup.
 - Start program automatically after login.
 - Automatically detect YouTube links in clipboard on launch.
+- Automatically check for yt-dlp updates on startup.
 
 ## Player  tab
 
@@ -145,6 +147,9 @@ In this tab there will be a number of options used for the music player:
 - Continue watching (Resume from last position)
 - Save watch history.
 - Save search history.
+- Play button action:
+  - Play with the computer's default player
+  - Play with the application's default player
 
 ## Search tab
 
@@ -193,6 +198,7 @@ you can access in music player.
 - go to time: allows you to jump to any music in a video.
 - Sleep Timer: Allows you to schedule music to turn off. This feature is useful when you need quiet to rest.
 - add to collection: You can add the video you're watching to your collection.
+- Video Transcript: You can read what's in the video.
 - Share: You can share videos with friends around you through the following supported services:
   - telegram.
   - facebook.
