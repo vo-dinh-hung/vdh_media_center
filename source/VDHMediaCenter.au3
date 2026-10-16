@@ -245,7 +245,7 @@ For $iMsg In $aGlobalMsgs
     DllCall("user32.dll", "bool", "ChangeWindowMessageFilter", "uint", $iMsg, "dword", 1)
 Next
 
-Global $version = "2.7"
+Global $version = "2.8"
 Global $YT_DLP_PATH = @ScriptDir & "\lib\yt-dlp.exe"
 ; Tiện ích lấy phụ đề YouTube (được đóng gói từ youtube_transcript.py).
 Global $YT_TRANSCRIPT_EXE = @ScriptDir & "\lib\youtube_transcript.exe"

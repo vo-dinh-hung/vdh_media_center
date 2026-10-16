@@ -1,3 +1,6 @@
+changes for version 2.8
+- fix some bug in few libraries 
+
 changes for version 2.7
 - Now, you can fast-forward videos in 1-minute increments using the Alt+Left and Alt+Right arrow keys.
 - add coppy title to clipboard. press c key to activate.
