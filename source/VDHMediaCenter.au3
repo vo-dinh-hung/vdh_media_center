@@ -163,9 +163,14 @@ Func _VLC_Direct_Play($sUrl)
         DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_player_stop", "ptr", $oVLC_Player)
     EndIf
     
-    Local $aRet = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_media_new_location", "ptr", $oVLC_Inst, "str", $sUrl)
+    ; $sUrl có thể gồm 2 dòng: dòng 1 = link video, dòng 2 = link audio riêng (YouTube DASH) -> ghép bằng input-slave
+    Local $aUrlParts = StringSplit(StringStripWS(StringReplace($sUrl, @CR, ""), 3), @LF, 2)
+    Local $aRet = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_media_new_location", "ptr", $oVLC_Inst, "str", $aUrlParts[0])
     Local $pMedia = $aRet[0]
     If Not $pMedia Then Return
+    If UBound($aUrlParts) > 1 Then
+        If StringStripWS($aUrlParts[1], 3) <> "" Then DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_add_option", "ptr", $pMedia, "str", ":input-slave=" & StringStripWS($aUrlParts[1], 3))
+    EndIf
     
     DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_player_set_media", "ptr", $oVLC_Player, "ptr", $pMedia)
     
@@ -245,10 +250,11 @@ For $iMsg In $aGlobalMsgs
     DllCall("user32.dll", "bool", "ChangeWindowMessageFilter", "uint", $iMsg, "dword", 1)
 Next
 
-Global $version = "2.8"
+Global $version = "2.9"
 Global $YT_DLP_PATH = @ScriptDir & "\lib\yt-dlp.exe"
 ; Tiện ích lấy phụ đề YouTube (được đóng gói từ youtube_transcript.py).
 Global $YT_TRANSCRIPT_EXE = @ScriptDir & "\lib\youtube_transcript.exe"
+Global $LYRICS_EXE_PATH = @ScriptDir & "\lib\lyrics.exe" ; built from lyrics.py
 
 ; --- JS runtime cho yt-dlp (khắc phục cảnh báo "No supported JavaScript runtime could be found") ---
 ; yt-dlp cần một runtime JS (deno hoặc node) để giải mã một số định dạng của YouTube.
@@ -336,6 +342,8 @@ Global $hDummyR, $hDummyRemaining, $hDummyShiftN, $hDummyShiftB, $hDummyCtrlW, $
 Global $hDummyB ; "b" key: previous track (only active while a folder playlist is loaded)
 Global $hDummyCtrlHome, $hDummyCtrlEnd ; Ctrl+Home/Ctrl+End: first/last track (folder playlist only)
 Global $hDummyCtrlAltT ; Ctrl+Alt+T: mở Video Transcript
+Global $hDummyCtrlAltL ; Ctrl+Alt+L: View Lyrics
+Global $menu_item_lyrics = -1 ; Options > View Lyrics...
 Global $g_aLocalPlaylist[1] = [""]
 Global $g_iLocalPlaylistCount = 0
 Global $g_bLocalPlaylistMode = False ; True only while playing a folder-loaded playlist (enables n/b navigation)
@@ -519,7 +527,7 @@ Global $menu_exit = GUICtrlCreateMenuItem("Exit...", $menu_main)
 Global $menu_help = GUICtrlCreateMenu("Help")
 Global $menu_about = GUICtrlCreateMenuItem("About...", $menu_help)
 Global $menu_website = GUICtrlCreateMenuItem("Visit &Website...", $menu_help)
-Global $menu_readme = GUICtrlCreateMenuItem("Readme...", $menu_help)
+Global $menu_readme = GUICtrlCreateMenuItem("Readme... (F1)", $menu_help)
 Global $menu_contact = GUICtrlCreateMenuItem("Contact...", $menu_help)
 Global $menu_update_ytdlp = GUICtrlCreateMenuItem("Checked for updates &yt_dlp...", $menu_help)
 Global $menu_Update_app = GUICtrlCreateMenuItem("Checked for &Updates...", $menu_help)
@@ -762,7 +770,7 @@ While 1
         Case $menu_website
             _GlobalSoundPlay("sounds/enter.wav", "system")
             ShellExecute("https://github.com/vo-dinh-hung/vdh_media_center")
-        Case $menu_readme
+        Case $menu_readme, $hDummyReadme
             _GlobalSoundPlay("sounds/enter.wav", "system")
             _RunSubWindow("_Show_Readme_Window")
         Case $menu_contact
@@ -1470,6 +1478,142 @@ Func _ShowYoutubeTranscript($sUrl, $hParent)
     WEnd
 EndFunc
 
+; ===========================================================================
+; VIEW LYRICS
+; Finds the lyrics of the selected / playing video with lib\lyrics.exe (built from
+; lyrics.py) and shows them in a read-only window with "Copy lyrics" and "Close" buttons.
+; ===========================================================================
+
+; Turns a YouTube title into a clean search phrase (removes "(Official MV)", [HD], #tags ...)
+Func _Lyrics_CleanTitle($sTitle)
+    Local $s = $sTitle
+    $s = StringRegExpReplace($s, "(?i)\.(mp3|m4a|wav|flac|ogg|opus|aac|wma|mp4|webm|mka)$", "") ; file extension (local files)
+    $s = StringReplace($s, "_", " ")
+    $s = StringRegExpReplace($s, "^\s*\d{1,3}\s*[.\-)]\s+", "")                              ; track number: "01 - ", "02. "
+    ; Pipes: "Artist - Song | Official MV" -> keep "Artist - Song";
+    ;        "Artist | Song | Official MV" -> keep "Artist Song" (the 2nd part is the song name)
+    $s = StringReplace($s, ChrW(0xFF5C), "|")
+    If StringInStr($s, "|") Then
+        Local $aPipeParts = StringSplit($s, "|", 2)
+        If StringInStr($aPipeParts[0], " - ") Or UBound($aPipeParts) < 2 Then
+            $s = $aPipeParts[0]
+        Else
+            $s = $aPipeParts[0] & " " & $aPipeParts[1]
+        EndIf
+    EndIf
+    $s = StringRegExpReplace($s, "\([^)]*\)|\[[^\]]*\]|\{[^}]*\}|\x{3010}[^\x{3011}]*\x{3011}", " ") ; (..) [..] {..}
+    $s = StringRegExpReplace($s, "#\S+", " ")                                            ; hashtags
+    $s = StringRegExpReplace($s, "(?i)l\x{1EDD}i\s+b\x{E0}i\s+h\x{E1}t", " ")            ; Vietnamese "loi bai hat"
+    $s = StringRegExpReplace($s, "(?i)\b(official|music video|lyric video|lyrics|lyric|audio|video|mv|karaoke|visualizer|hd|4k|1080p)\b", " ")
+    $s = StringRegExpReplace($s, "[\x{2013}\x{2014}]", "-")                              ; en/em dash -> hyphen
+    $s = StringRegExpReplace($s, "\s+", " ")
+    $s = StringRegExpReplace($s, "^[\s\-:,.]+|[\s\-:,.]+$", "")
+    Return $s
+EndFunc
+
+; Main entry point: runs lib\lyrics.exe (built from lyrics.py) to find the lyrics of the song,
+; then shows them in a read-only window with "Copy lyrics" and "Close" buttons.
+Func _ShowSongLyrics($sTitle, $hParent = 0, $sID = "")
+    If Not FileExists($LYRICS_EXE_PATH) Then
+        MsgBox(16, "View lyrics", "Missing file:" & @CRLF & $LYRICS_EXE_PATH & @CRLF & @CRLF & "Build lyrics.py and copy lyrics.exe to the lib folder.", 0, $hParent)
+        Return
+    EndIf
+
+    Local $sQuery = _Lyrics_CleanTitle($sTitle)
+    Local $sSafeID = StringRegExpReplace($sID, "[^A-Za-z0-9_\-]", "")
+    If $sQuery = "" And $sSafeID = "" Then
+        MsgBox(48, "View lyrics", "Could not work out a song name from this title.", 0, $hParent)
+        Return
+    EndIf
+    Local $sSafeQuery = StringRegExpReplace($sQuery, '["\\]', "") ; quotes / backslashes would break the command line
+
+    Local $sOutput = @TempDir & "\VDHLyrics_" & @AutoItPID & "_" & Int(TimerInit()) & "_" & Random(1000, 9999, 1) & ".txt"
+    FileDelete($sOutput)
+
+    ; lyrics.py uses argparse: a value that starts with "-" (a YouTube id can!) is mistaken for an
+    ; option when passed as a separate argument, so every value is passed as --name=value.
+    Local $sCmd = '"' & $LYRICS_EXE_PATH & '"'
+    If $sSafeID <> "" Then $sCmd &= ' --id=' & $sSafeID
+    If $sSafeQuery <> "" Then $sCmd &= ' --query="' & $sSafeQuery & '"'
+    $sCmd &= ' --output="' & $sOutput & '"'
+
+    Local $sOut = "", $sError = ""
+    Local $bDone = _RunTaskWithProgressDialog($sCmd, "View Lyrics", "Searching for lyrics...", $sOut, $sError, $hParent)
+    If Not $bDone Then
+        ProcessClose("lyrics.exe")
+        FileDelete($sOutput)
+        Return ; cancelled by the user
+    EndIf
+
+    Local $sRaw = ""
+    If FileExists($sOutput) Then
+        ; lyrics.py writes UTF-8 without BOM: flag 256 is required, otherwise AutoIt reads the file
+        ; as ANSI and every Vietnamese / non-ASCII character comes out garbled.
+        Local $hFile = FileOpen($sOutput, $FO_READ + 256)
+        If $hFile <> -1 Then
+            $sRaw = FileRead($hFile)
+            FileClose($hFile)
+        EndIf
+        FileDelete($sOutput)
+    EndIf
+
+    ; first line may be "#HEADING: Track - Artist", the rest is the lyrics text
+    Local $sHeading = "Lyrics"
+    Local $sLyrics = $sRaw
+    If StringLeft($sRaw, 9) = "#HEADING:" Then
+        Local $iEol = StringInStr($sRaw, @LF)
+        If $iEol > 0 Then
+            $sHeading = "Lyrics: " & StringStripWS(StringMid($sRaw, 10, $iEol - 10), 3)
+            $sLyrics = StringTrimLeft($sRaw, $iEol)
+        EndIf
+    EndIf
+    $sLyrics = StringReplace($sLyrics, @CRLF, @LF)
+    $sLyrics = StringReplace($sLyrics, @LF, @CRLF) ; the Edit control needs CRLF line breaks
+
+    If StringStripWS($sLyrics, 8) = "" Then
+        If $sRaw = "" And $sError <> "" And Not StringInStr($sError, "NOT_FOUND") Then
+            MsgBox(16, "View lyrics", "Could not get the lyrics." & @CRLF & @CRLF & "Details: " & StringStripWS($sError, 7), 0, $hParent)
+        Else
+            Local $sShown = $sQuery
+            If $sShown = "" Then $sShown = $sTitle
+            If MsgBox(4 + 32, "View lyrics", "No lyrics were found for:" & @CRLF & $sShown & @CRLF & @CRLF & "Do you want to search for them on the web in your browser?", 0, $hParent) = 6 Then
+                ShellExecute("https://www.google.com/search?q=" & _URLEncode($sShown & " lyrics"))
+            EndIf
+        EndIf
+        Return
+    EndIf
+
+    ; --- lyrics window ---
+    Local $hLyrics = GUICreate("View lyrics", 700, 560, -1, -1, -1, -1, $hParent)
+    GUISetBkColor(0xFFFFFF, $hLyrics)
+    GUICtrlCreateLabel($sHeading, 12, 12, 675, 20)
+    Local $edtLyrics = GUICtrlCreateEdit("", 12, 38, 675, 450, BitOR($ES_MULTILINE, $ES_AUTOVSCROLL, $ES_READONLY, $WS_VSCROLL, $WS_TABSTOP))
+    GUICtrlSetFont($edtLyrics, 11)
+    _GUICtrlEdit_SetLimitText($edtLyrics, 0) ; lift the default ~32K limit BEFORE filling the text
+    GUICtrlSetData($edtLyrics, $sLyrics)
+    Local $btnCopy = GUICtrlCreateButton("Copy lyrics", 180, 505, 160, 32)
+    Local $btnClose = GUICtrlCreateButton("Close", 360, 505, 160, 32)
+    Local $hDummyEscLyr = GUICtrlCreateDummy()
+    Local $aAccelLyr[1][2] = [["{ESC}", $hDummyEscLyr]]
+    GUISetAccelerators($aAccelLyr, $hLyrics)
+    GUISetState(@SW_SHOW, $hLyrics)
+    _AllowUIPI($hLyrics)
+    GUICtrlSetState($edtLyrics, $GUI_FOCUS)
+    _GUICtrlEdit_SetSel($edtLyrics, 0, 0) ; cursor at the start, nothing pre-selected
+
+    While 1
+        Local $iMsg = _GuiMsg($hLyrics)
+        Switch $iMsg
+            Case $GUI_EVENT_CLOSE, $btnClose, $hDummyEscLyr
+                GUIDelete($hLyrics)
+                ExitLoop
+            Case $btnCopy
+                ClipPut($sLyrics)
+                MsgBox(64, "View lyrics", "Lyrics copied to clipboard.", 0, $hLyrics)
+        EndSwitch
+    WEnd
+EndFunc
+
 Func _SearchEditProc($hWnd, $iMsg, $wParam, $lParam)
     Local $aRet = DllCall("user32.dll", "lresult", "CallWindowProcW", "ptr", $g_pOldSearchEditProc, "hwnd", $hWnd, "uint", $iMsg, "wparam", $wParam, "lparam", $lParam)
     
@@ -2157,6 +2301,7 @@ Func _ShowContextMenu($bIsFavContext = False)
     _GUICtrlMenu_AddMenuItem($hMenu, "Go to &channel...", 1004)
     _GUICtrlMenu_AddMenuItem($hMenu, "Open in &Browser...", 1005)
     _GUICtrlMenu_AddMenuItem($hMenu, "Copy Lin&k...", 1006)
+    _GUICtrlMenu_AddMenuItem($hMenu, "View &Lyrics...", 1009)
 
     Local $bIsInCollection = _IsVideoInAnyCollection($sID)
     _GUICtrlMenu_AddMenuItem($hMenu, _Ternary($bIsInCollection, "Remove from &Collection...", "Add to &Collection..."), 1008)
@@ -2210,6 +2355,8 @@ Func _ShowContextMenu($bIsFavContext = False)
             _Action_OpenBrowser($iIndex)
         Case 1006
             _Action_CopyLink($iIndex)
+        Case 1009
+            _ShowSongLyrics($sTitle, $hActiveGui, $sID)
         Case 1008
             If _IsVideoInAnyCollection($sID) Then
                 _RemoveFromAllCollectionsDialog($sID)
@@ -2389,7 +2536,7 @@ Func _PlayLoop($iCurrentIndex, $bAudioOnly = False)
         EndIf
 
         DllCall("winmm.dll", "int", "PlaySoundW", "wstr", @ScriptDir & "\sounds\loading.wav", "ptr", 0, "dword", 0x0009)
-        Local $sFormat = _Ternary($bAudioOnly, "bestaudio/best", "best[ext=mp4]/best")
+        Local $sFormat = _Ternary($bAudioOnly, "bestaudio/best", "best[ext=mp4]/best/bv*[height<=1080]+ba/b")
 
         ; Sửa lỗi trích xuất link và hỗ trợ nâng/hạ Tone (Pitch)
         ; Nếu $g_fPitch <> 1.0, chúng ta sẽ dùng ffmpeg làm proxy để xử lý âm thanh thời gian thực
@@ -2422,7 +2569,7 @@ Func _PlayLoop($iCurrentIndex, $bAudioOnly = False)
         $sUrl &= StdoutRead($pid_url)
         $sErr &= StderrRead($pid_url)
 
-        $sUrl = StringStripWS($sUrl, 3)
+        $sUrl = StringStripWS(StringReplace($sUrl, @CR, ""), 3)
         DllCall("winmm.dll", "int", "PlaySoundW", "ptr", 0, "ptr", 0, "dword", 0)
 
         If $bCancel = True Then
@@ -2615,66 +2762,25 @@ SoundPlay(@ScriptDir & "\sounds\download_finish.wav")
 EndFunc
 
 Func playmedia($url)
-    ; Update existing player info or show status if GUI exists
-    Local $hLoading = 0
-    If IsHWnd($hPlayGui) Then
-        GUICtrlSetData($g_lblPlayerInfo, "Loading video...")
-        GUICtrlSetData($g_hStatusLabel, "Fetching stream URL...")
-    Else
-        $hLoading = GUICreate("Playing", 250, 80, -1, -1, BitOR($WS_POPUP, $WS_BORDER), BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW))
-        GUICtrlCreateLabel("Loading, please wait...", 10, 25, 230, 30, $SS_CENTER)
-        GUISetBkColor(0xFFFFFF, $hLoading)
-        GUISetState(@SW_SHOW, $hLoading)
-        Sleep(1)
-    EndIf
-
-    DllCall("winmm.dll", "int", "PlaySoundW", "wstr", @ScriptDir & "\sounds\loading.wav", "ptr", 0, "dword", 0x0009)
-    Local $sCmd = @ComSpec & ' /c "' & $YT_DLP_EXE & ' -g -f "best" --no-playlist --no-check-certificate --no-warnings --no-mtime --socket-timeout 5 --geo-bypass --encoding utf-8 -4 -- "' & $url & '""'
-    Local $pid = Run($sCmd, @ScriptDir, @SW_HIDE, $STDOUT_CHILD + $STDERR_CHILD)
-    Local $dlink = "", $sErr = ""
-    Local $bCancel = False
-    While ProcessExists($pid)
-        $dlink &= StdoutRead($pid)
-        $sErr &= StderrRead($pid)
-        Local $msg = GUIGetMsg()
-        If $msg <> 0 Then
-            If $msg = $GUI_EVENT_CLOSE Or ($hDummyEsc And $msg = $hDummyEsc) Or ($hDummyCtrlW And $msg = $hDummyCtrlW) Then
-                $bCancel = True
-                ProcessClose($pid)
-                ExitLoop
-            EndIf
-        EndIf
-        Sleep(10)
-    WEnd
-    $dlink &= StdoutRead($pid)
-    $dlink = StringStripWS($dlink, 3)
-    DllCall("winmm.dll", "int", "PlaySoundW", "ptr", 0, "ptr", 0, "dword", 0)
-
-    If $bCancel Then
-        If $hLoading <> 0 Then GUIDelete($hLoading)
-        Return
-    EndIf
-
-    If $dlink <> "" Then
-        SoundPlay(@ScriptDir & "\sounds\ok.wav")
-        Local $id = _GetYoutubeID($url)
-        Local $sTitle = _GetYoutubeTitle($url)
-        If $sTitle = "" Then $sTitle = "YouTube Video"
-        _AddHistory($id, $sTitle)
-        _PlayInternal($dlink, $sTitle, False, $hLoading, False, $id)
-    Else
-        If $hLoading <> 0 Then GUIDelete($hLoading)
-        Local $sErrMsg = "Cannot get video stream from this link."
-        If $sErr <> "" Then $sErrMsg &= " Details: " & StringLeft(StringStripWS($sErr, 3), 100)
-        MsgBox(16, "Error", $sErrMsg)
-    EndIf
+    _PlayYoutubeLink($url, False)
 EndFunc
 
 Func playaudio($url)
+    _PlayYoutubeLink($url, True)
+EndFunc
+
+; Dùng chung cho "Play" và "Play as Audio" khi người dùng nhập link (hoặc link lấy từ clipboard).
+; Lấy link stream giống hệt luồng phát từ kết quả tìm kiếm (_PlayLoop) để phát nhanh và tua mượt:
+;  - dùng ID video thay vì nguyên link (bỏ &list=, &t=, &pp=... trong link dán vào),
+;  - cùng định dạng và cùng player-client (android, ios) -> nhận được luồng mp4 trực tiếp, tua tốt,
+;  - lấy tiêu đề và link stream trong CÙNG MỘT lần gọi yt-dlp (trước đây phải gọi hai lần liên tiếp).
+Func _PlayYoutubeLink($url, $bAudioOnly = False)
+    $url = StringStripWS($url, 3)
+
     ; Update existing player info or show status if GUI exists
     Local $hLoading = 0
     If IsHWnd($hPlayGui) Then
-        GUICtrlSetData($g_lblPlayerInfo, "Loading audio...")
+        GUICtrlSetData($g_lblPlayerInfo, _Ternary($bAudioOnly, "Loading audio...", "Loading video..."))
         GUICtrlSetData($g_hStatusLabel, "Fetching stream URL...")
     Else
         $hLoading = GUICreate("Playing", 250, 80, -1, -1, BitOR($WS_POPUP, $WS_BORDER), BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW))
@@ -2685,25 +2791,61 @@ Func playaudio($url)
     EndIf
 
     DllCall("winmm.dll", "int", "PlaySoundW", "wstr", @ScriptDir & "\sounds\loading.wav", "ptr", 0, "dword", 0x0009)
-    Local $sCmd = @ComSpec & ' /c "' & $YT_DLP_EXE & ' -g -f "bestaudio" --no-playlist --no-check-certificate --no-warnings --no-mtime --socket-timeout 5 --geo-bypass --encoding utf-8 -4 -- "' & $url & '""'
-    Local $pid = Run($sCmd, @ScriptDir, @SW_HIDE, $STDOUT_CHILD + $STDERR_CHILD)
-    Local $dlink = "", $sErr = ""
+
+    ; Ưu tiên truyền ID video (giống luồng tìm kiếm); link lạ (không lấy được ID) thì truyền nguyên link
+    Local $sTarget = $url
+    Local $sVideoID = _GetYoutubeID($url)
+    If StringRegExp($sVideoID, "^[A-Za-z0-9_-]{11}$") Then $sTarget = $sVideoID
+
+    Local $sTitle = "", $sDLink = "", $sErr = ""
     Local $bCancel = False
-    While ProcessExists($pid)
-        $dlink &= StdoutRead($pid)
-        $sErr &= StderrRead($pid)
-        Local $msg = GUIGetMsg()
-        If $msg <> 0 Then
-            If $msg = $GUI_EVENT_CLOSE Or ($hDummyEsc And $msg = $hDummyEsc) Or ($hDummyCtrlW And $msg = $hDummyCtrlW) Then
-                $bCancel = True
-                ProcessClose($pid)
-                ExitLoop
-            EndIf
+
+    ; Lần 1: cấu hình giống luồng tìm kiếm. Lần 2 (chỉ khi lần 1 không ra link): cấu hình mặc định của yt-dlp
+    For $iTry = 1 To 2
+        Local $sFormat, $sClientArg
+        If $iTry = 1 Then
+            $sFormat = _Ternary($bAudioOnly, "bestaudio/best", "best[ext=mp4]/best/bv*[height<=1080]+ba/b")
+            $sClientArg = ' --extractor-args "youtube:player-client=android,ios"'
+        Else
+            $sFormat = _Ternary($bAudioOnly, "bestaudio/best", "best/bv*[height<=1080]+ba/b")
+            $sClientArg = ''
         EndIf
-        Sleep(10)
-    WEnd
-    $dlink &= StdoutRead($pid)
-    $dlink = StringStripWS($dlink, 3)
+
+        Local $sCmd = @ComSpec & ' /c "' & $YT_DLP_EXE & ' --print title --print urls -f "' & $sFormat & '" --no-playlist --no-check-certificate --no-warnings --no-mtime --socket-timeout 10 --geo-bypass' & $sClientArg & ' --encoding utf-8 -- "' & $sTarget & '""'
+        Local $pid = Run($sCmd, @ScriptDir, @SW_HIDE, $STDOUT_CHILD + $STDERR_CHILD)
+        Local $bData = Binary("")
+        $sErr = ""
+        While ProcessExists($pid)
+            $bData &= StdoutRead($pid, False, True)
+            $sErr &= StderrRead($pid)
+            Local $msg = GUIGetMsg()
+            If $msg <> 0 Then
+                If $msg = $GUI_EVENT_CLOSE Or ($hDummyEsc And $msg = $hDummyEsc) Or ($hDummyCtrlW And $msg = $hDummyCtrlW) Then
+                    $bCancel = True
+                    ProcessClose($pid)
+                    ExitLoop
+                EndIf
+            EndIf
+            Sleep(10)
+        WEnd
+        If $bCancel Then ExitLoop
+        $bData &= StdoutRead($pid, False, True)
+        $sErr &= StderrRead($pid)
+
+        ; Dòng đầu = tiêu đề, các dòng sau = link stream (1 dòng, hoặc 2 dòng video + audio)
+        Local $aLines = StringSplit(StringReplace(BinaryToString($bData, 4), @CR, ""), @LF, 2)
+        $sTitle = ""
+        $sDLink = ""
+        If UBound($aLines) > 1 Then
+            $sTitle = StringStripWS($aLines[0], 3)
+            For $i = 1 To UBound($aLines) - 1
+                Local $sLine = StringStripWS($aLines[$i], 3)
+                If $sLine <> "" Then $sDLink &= ($sDLink = "" ? "" : @LF) & $sLine
+            Next
+        EndIf
+        If $sDLink <> "" Then ExitLoop
+    Next
+
     DllCall("winmm.dll", "int", "PlaySoundW", "ptr", 0, "ptr", 0, "dword", 0)
 
     If $bCancel Then
@@ -2711,16 +2853,21 @@ Func playaudio($url)
         Return
     EndIf
 
-    If $dlink <> "" Then
+    If $sDLink <> "" Then
         SoundPlay(@ScriptDir & "\sounds\ok.wav")
         Local $id = _GetYoutubeID($url)
-        Local $sTitle = _GetYoutubeTitle($url)
-        If $sTitle = "" Then $sTitle = "YouTube Audio"
-        _AddHistory($id, $sTitle)
-        _PlayInternal($dlink, "YouTube Audio Player", True, $hLoading, False, $id)
+        If $bAudioOnly Then
+            If $sTitle = "" Then $sTitle = "YouTube Audio"
+            _AddHistory($id, $sTitle)
+            _PlayInternal($sDLink, "YouTube Audio Player", True, $hLoading, False, $id)
+        Else
+            If $sTitle = "" Then $sTitle = "YouTube Video"
+            _AddHistory($id, $sTitle)
+            _PlayInternal($sDLink, $sTitle, False, $hLoading, False, $id)
+        EndIf
     Else
         If $hLoading <> 0 Then GUIDelete($hLoading)
-        Local $sErrMsg = "Cannot get audio stream from this link."
+        Local $sErrMsg = _Ternary($bAudioOnly, "Cannot get audio stream from this link.", "Cannot get video stream from this link.")
         If $sErr <> "" Then $sErrMsg &= " Details: " & StringLeft(StringStripWS($sErr, 3), 100)
         MsgBox(16, "Error", $sErrMsg)
     EndIf
@@ -2961,6 +3108,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
             $menu_item_desc = GUICtrlCreateMenuItem("&Video Description...", $hMenu_Options)
             $menu_item_comments = GUICtrlCreateMenuItem("Video Com&ments...", $hMenu_Options)
             $menu_item_transcript = GUICtrlCreateMenuItem("Video &Transcript... (Ctrl+Alt+T)", $hMenu_Options)
+            $menu_item_lyrics = GUICtrlCreateMenuItem("View &Lyrics... (Ctrl+Alt+L)", $hMenu_Options)
 
             Local $sFavText = _Ternary(_IsFavorite($sID), "&Remove from Favorite...", "Add to &Favorite...")
             $menu_item_fav = GUICtrlCreateMenuItem($sFavText, $hMenu_Options)
@@ -2992,6 +3140,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
             $menu_item_desc = -1
             $menu_item_comments = -1
             $menu_item_transcript = -1
+            $menu_item_lyrics = -1
             $menu_item_fav = -1
             $menu_item_add_col = -1
             $menu_item_remove_col = -1
@@ -3112,7 +3261,10 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         ; Ctrl+Alt+T: mở Video Transcript
         $hDummyCtrlAltT = GUICtrlCreateDummy()
 
-        Local $aAccelPlay[55][2] = [ _
+        ; Ctrl+Alt+L: View Lyrics
+        $hDummyCtrlAltL = GUICtrlCreateDummy()
+
+        Local $aAccelPlay[56][2] = [ _
             ["{SPACE}", $hDummySpace], _
             ["n", $hDummyN], _ ; Next
             ["b", $hDummyB], _ ; Previous (folder playlist only)
@@ -3166,6 +3318,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
             ["^{HOME}", $hDummyCtrlHome], _ ; First File (folder playlist only)
             ["^{END}", $hDummyCtrlEnd], _   ; Last File (folder playlist only)
             ["^!t", $hDummyCtrlAltT], _     ; Ctrl+Alt+T: Video Transcript
+            ["^!l", $hDummyCtrlAltL], _     ; Ctrl+Alt+L: View Lyrics
             ["!{LEFT}", $hDummyAltLeft], _  ; Alt+Left: Rewind 1 minute
             ["!{RIGHT}", $hDummyAltRight] _ ; Alt+Right: Forward 1 minute
         ]
@@ -3355,6 +3508,12 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                     _ReportStatus("Not available for local audio files.")
                 Else
                     _ShowYoutubeTranscript("https://www.youtube.com/watch?v=" & $sID, $hPlayGui)
+                EndIf
+            Case $menu_item_lyrics, $hDummyCtrlAltL
+                If $bLocalFile Then
+                    _ShowSongLyrics($sTitle, $hPlayGui, "") ; local file: no video id, search by its name only
+                Else
+                    _ShowSongLyrics($sTitle, $hPlayGui, $sID)
                 EndIf
             Case $menu_item_fav
                 If _IsFavorite($sID) Then
@@ -3864,6 +4023,7 @@ Func _GetPlayerHelpLines($bLocalFile, $bAllowAutoPlayToggle)
         "- / =: Shorter / Longer seek step" & @LF & _
         "P: Show percentage played" & @LF & _
         "Ctrl+G: Go to a specific time" & @LF & _
+        "Ctrl+Alt+L: View lyrics" & @LF & _
         "C: Copy the track title" & @LF
     If $bLocalFile Then
         $sHelp &= "I: Show file information" & @LF
@@ -5074,8 +5234,12 @@ Func _Check_YTDLP_Update($bSilent = False)
 
                     FileDelete($sSavePathFinal)
                     If FileMove($sSavePathTemp, $sSavePathFinal, 1) Then
-            SoundPlay("sounds/updated_yt-dlp.wav")
-                        MsgBox(64, "Success", "yt-dlp has been updated successfully!")
+                        ; Bước bổ sung: tải/cập nhật Deno (JS runtime cho yt-dlp)
+                        Local $bDenoOk = _Update_Deno()
+                        SoundPlay("sounds/updated_yt-dlp.wav")
+                        Local $sOkMsg = "yt-dlp has been updated successfully!"
+                        If $bDenoOk Then $sOkMsg &= @CRLF & "Deno (JavaScript runtime) is ready."
+                        MsgBox(64, "Success", $sOkMsg)
         SoundPlay("sounds/restart.wav")
                         If MsgBox(4, "Restart Required", "The software needs to restart to apply the update. Restart now?") = 6 Then
                             ShellExecute(@ScriptFullPath, "/restart")
@@ -5088,11 +5252,171 @@ Func _Check_YTDLP_Update($bSilent = False)
                 EndIf
             EndIf
         Else
-            If Not $bSilent Then MsgBox(64, "no update available", "You are using the latest version from yt-dlp.")
+            ; yt-dlp đã mới nhất -> kiểm tra Deno; hộp thoại "đã mới nhất" được gộp chung trong _Check_Deno_Update
+            _Check_Deno_Update($bSilent, True)
         EndIf
     Else
         If Not $bSilent Then MsgBox(16, "Error", "Could not parse version information.")
     EndIf
+EndFunc
+
+; Lấy phiên bản deno.exe hiện có trong lib (trả về "0" nếu chưa có)
+Func _Get_Deno_LocalVersion()
+    If Not FileExists($YT_DENO_PATH) Then Return "0"
+    Local $pid = Run('"' & $YT_DENO_PATH & '" --version', @ScriptDir, @SW_HIDE, $STDOUT_CHILD)
+    If @error Then Return "0"
+    ProcessWaitClose($pid, 10)
+    Local $sOut = StdoutRead($pid)
+    Local $aVer = StringRegExp($sOut, "deno\s+([0-9]+\.[0-9]+\.[0-9]+)", 1)
+    If IsArray($aVer) Then Return $aVer[0]
+    Return "0"
+EndFunc
+
+; Hỏi GitHub API của denoland/deno: trả về phiên bản mới nhất (vd "2.5.6", "" nếu lỗi)
+; và gán vào $sUrl link chính xác của file zip chứa deno.exe (nếu tìm thấy).
+Func _Get_Deno_LatestInfo(ByRef $sUrl)
+    Local $sArch = "x86_64"
+    If @OSArch = "ARM64" Then $sArch = "aarch64"
+    Local $sAsset = "deno-" & $sArch & "-pc-windows-msvc.zip"
+    $sUrl = "https://github.com/denoland/deno/releases/latest/download/" & $sAsset
+    Local $sLatest = ""
+
+    Local $oHTTP = ObjCreate("WinHttp.WinHttpRequest.5.1")
+    If IsObj($oHTTP) Then
+        $oHTTP.Open("GET", "https://api.github.com/repos/denoland/deno/releases/latest", False)
+        $oHTTP.SetRequestHeader("User-Agent", "Mozilla/5.0")
+        $oHTTP.Send()
+        If Not @error And $oHTTP.Status = 200 Then
+            Local $sResp = $oHTTP.ResponseText
+            Local $aTag = StringRegExp($sResp, '"tag_name":\s*"v?([^"]+)"', 1)
+            If IsArray($aTag) Then $sLatest = $aTag[0]
+            Local $aUrl = StringRegExp($sResp, '"browser_download_url":\s*"([^"]*/' & StringReplace($sAsset, ".", "\.") & ')"', 1)
+            If IsArray($aUrl) Then $sUrl = $aUrl[0]
+        EndIf
+    EndIf
+    Return $sLatest
+EndFunc
+
+; Kiểm tra cập nhật Deno độc lập với yt-dlp (thiếu deno.exe hoặc có bản mới hơn thì hỏi tải)
+Func _Check_Deno_Update($bSilent = False, $bYtdlpLatest = False)
+    Local $sUrl = ""
+    Local $sLatest = _Get_Deno_LatestInfo($sUrl)
+    Local $sLocal = _Get_Deno_LocalVersion()
+    Local $bMissing = ($sLocal = "0")
+    Local $sYtPrefix = ""
+    If $bYtdlpLatest Then $sYtPrefix = "yt-dlp is up to date." & @CRLF
+
+    If Not $bMissing Then
+        If $sLatest = "" Then
+            If Not $bSilent Then MsgBox(48, "Check Update", $sYtPrefix & "Could not check the latest Deno version.")
+            Return
+        EndIf
+        If $sLocal = $sLatest Then
+            If Not $bSilent Then
+                If $bYtdlpLatest Then
+                    MsgBox(64, "no update available", "You are using the latest versions from yt-dlp and Deno.")
+                Else
+                    MsgBox(64, "no update available", "You are using the latest version from Deno.")
+                EndIf
+            EndIf
+            Return
+        EndIf
+    EndIf
+
+    SoundPlay("sounds/update_yt-dlp.wav")
+    Local $sMsg
+    If $bMissing Then
+        $sMsg = $sYtPrefix & "Deno (JavaScript runtime needed by yt-dlp for YouTube) is not installed."
+        If $sLatest <> "" Then $sMsg &= @CRLF & "Latest version: " & $sLatest
+    Else
+        $sMsg = $sYtPrefix & "A new version of Deno (" & $sLatest & ") is available!" & @CRLF & "Current version: " & $sLocal
+    EndIf
+    If MsgBox(36, "Deno Update", $sMsg & @CRLF & @CRLF & "Do you want to download it now?") <> 6 Then Return
+
+    If _Update_Deno() Then
+        SoundPlay("sounds/updated_yt-dlp.wav")
+        MsgBox(64, "Success", "Deno has been updated successfully!")
+        SoundPlay("sounds/restart.wav")
+        If MsgBox(4, "Restart Required", "The software needs to restart to apply the update. Restart now?") = 6 Then
+            ShellExecute(@ScriptFullPath, "/restart")
+            Exit
+        EndIf
+    EndIf
+EndFunc
+
+; Tải Deno từ https://github.com/denoland/deno/releases
+; File .exe nằm BÊN TRONG file zip "deno-<arch>-pc-windows-msvc.zip" của bản phát hành mới nhất,
+; nên hàm sẽ tải zip, giải nén rồi đặt deno.exe vào lib\deno.exe.
+; Trả về True nếu deno.exe đã sẵn sàng (đã mới nhất hoặc vừa cập nhật), False nếu lỗi.
+Func _Update_Deno()
+    Local $sUrl = ""
+    Local $sLatest = _Get_Deno_LatestInfo($sUrl)
+
+    ; Đã có deno.exe và (đã mới nhất hoặc không kiểm tra được phiên bản) thì bỏ qua
+    Local $sLocal = _Get_Deno_LocalVersion()
+    If $sLocal <> "0" And ($sLatest = "" Or $sLocal = $sLatest) Then Return True
+
+    DirCreate(@ScriptDir & "\lib")
+    Local $sZip = @ScriptDir & "\lib\deno_download.zip"
+    Local $sTmpDir = @ScriptDir & "\lib\deno_tmp"
+    FileDelete($sZip)
+    DirRemove($sTmpDir, 1)
+
+    _ReportStatus("Downloading Deno, please wait")
+    ProgressOn("Downloading Deno", "Please wait while downloading Deno...", "0%")
+    Local $hDl = InetGet($sUrl, $sZip, 1, 1)
+    Local $iRead, $iSize, $iPct
+    Do
+        Sleep(50)
+        $iRead = InetGetInfo($hDl, 0)
+        $iSize = InetGetInfo($hDl, 1)
+        If $iSize > 0 Then
+            $iPct = Round(($iRead / $iSize) * 100)
+            ProgressSet($iPct, $iPct & "% complete")
+        Else
+            ProgressSet(0, "Connecting...")
+        EndIf
+    Until InetGetInfo($hDl, 2)
+    Local $bOk = InetGetInfo($hDl, 3)
+    Local $iErr = InetGetInfo($hDl, 4)
+    InetClose($hDl)
+    ProgressOff()
+
+    If Not $bOk Or Not FileExists($sZip) Or FileGetSize($sZip) = 0 Then
+        MsgBox(16, "Error", "Failed to download Deno. Error code: " & $iErr)
+        FileDelete($sZip)
+        Return False
+    EndIf
+
+    ; Giải nén zip để lấy deno.exe
+    _ReportStatus("Extracting Deno")
+    RunWait('powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath ''' & $sZip & ''' -DestinationPath ''' & $sTmpDir & ''' -Force"', @ScriptDir, @SW_HIDE)
+    FileDelete($sZip)
+
+    If Not FileExists($sTmpDir & "\deno.exe") Then
+        MsgBox(16, "Error", "Could not find deno.exe in the downloaded Deno package.")
+        DirRemove($sTmpDir, 1)
+        Return False
+    EndIf
+
+    ; Đóng deno.exe đang chạy (nếu có) để ghi đè được file
+    Local $iTry = 0
+    While ProcessExists("deno.exe") And $iTry < 40
+        ProcessClose("deno.exe")
+        Sleep(50)
+        $iTry += 1
+    WEnd
+    Sleep(100)
+
+    FileDelete($YT_DENO_PATH)
+    Local $bMoved = FileMove($sTmpDir & "\deno.exe", $YT_DENO_PATH, 1)
+    DirRemove($sTmpDir, 1)
+
+    If Not $bMoved Then
+        MsgBox(16, "Error", "Failed to install deno.exe. Please close any programs using it and try again.")
+        Return False
+    EndIf
+    Return True
 EndFunc
 
 Func _CheckGithubUpdate($bSilent = False)
@@ -6399,6 +6723,7 @@ Func _ShowCollectionItemContextMenu($sColFile, $hParent, $hList, ByRef $aIds, By
     _GUICtrlMenu_AddMenuItem($hMenu, "Go to &channel...", 1004)
     _GUICtrlMenu_AddMenuItem($hMenu, "Open in &Browser...", 1005)
     _GUICtrlMenu_AddMenuItem($hMenu, "Copy Lin&k...", 1006)
+    _GUICtrlMenu_AddMenuItem($hMenu, "View &Lyrics...", 1009)
     
     _GUICtrlMenu_AddMenuItem($hMenu, "&Remove from Collection", 2001)
 
@@ -6436,6 +6761,8 @@ Func _ShowCollectionItemContextMenu($sColFile, $hParent, $hList, ByRef $aIds, By
             _Action_OpenBrowser($iSel)
         Case 1006
             _Action_CopyLink($iSel)
+        Case 1009
+            _ShowSongLyrics($sTitle, $hParent, $sID)
         Case 1007
             If $bIsAlreadyFav Then
                 If _RemoveFavorite($sID) Then MsgBox(64, "Success", "Removed from favorites successfully!")

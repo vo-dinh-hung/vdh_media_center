@@ -1,3 +1,13 @@
+changes for version 2.9
+- readme has been updated.
+- add f1 in main interface to view readme.
+- The decompression system (unzip) has been upgraded after the update to allow overwriting if the included components change.
+- Now, during the yt-dlp update process, the application will update the included deno component to the latest version.
+- update deno library to version 1.9.8
+- update yt-dlp to version 2026.10.21
+- fix bug in detected link from clipboard.
+- add view lyrics to you can easily read the lyrics of the song you're listening.
+
 changes for version 2.8
 - fix some bug in few libraries 
 

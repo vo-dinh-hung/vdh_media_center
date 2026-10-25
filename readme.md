@@ -2,6 +2,8 @@
 
 This software allows you to search YouTube, download videos, or even play videos if you want. I created this software to help you conveniently watch YouTube videos without worrying about where to listen to them.
 
+---
+
 ### Instructions:
 
 After downloading, please extract the file. Note: If your antivirus software scans the exe file, please turn off your antivirus software. Find the VDH media center.exe file to start a software window.
@@ -22,6 +24,8 @@ After running, an interface will appear with the following functions:
 
 In the main interface of the software, you can press the Alt key to open the help menu. In this menu, you can view the software's information, read the readme, and contact the main developer.
 
+---
+
 ### help menu:
 
 We have designed a help menu where you can find every valuable information
@@ -36,12 +40,16 @@ We have designed a help menu where you can find every valuable information
 - visit website: You can visit to know more about this project.
 - Send feedback: Please send us your feedback.
 
+---
+
 ### main menu
 
 There are a few small options for your easy access:
 
 - exit: you can exit the Program or press alt+f4 to close application.
 - settings: In this section there will be a few options for you to configure according to your preferences.
+
+---
 
 ### main shortcut:
 
@@ -62,6 +70,7 @@ We have assigned keyboard shortcuts for you to easily use the software and be fl
 - S / D / F: Change Speed (Fast / Normal / Slow).
 - (Minus) / = (Equal): Decrease / Increase the seek step (seconds jumped by arrows).
 - f2: view changelog.
+- f1: view readme
 - R: Toggle Repeat.
 - Shift + N: Next Video.
 - Shift + B: Previous Video.
@@ -83,6 +92,9 @@ We have assigned keyboard shortcuts for you to easily use the software and be fl
 - up/down arrow: increase/decrease volume
 - left/right arrow: rewind/fast forward
 - control+alt+t: activate video transcript.
+- control+alt+l: activate view lyrics.
+
+---
 
 ### listen file shortcut:
 
@@ -99,6 +111,7 @@ Below are the keyboard shortcuts in the music player interface (only applicable 
 - up/down arrow: increase/decrease volume
 - left/right arrow: rewind/fast forward
 - i: see info
+- control+alt+l: activate view lyrics.
 
 ## listen Folder:
 
@@ -114,6 +127,9 @@ Below are the keyboard shortcuts in the music player interface (only applicable 
 - (Minus) / = (Equal): Decrease / Increase the seek step (seconds jumped by arrows).
 - up/down arrow: increase/decrease volume
 - left/right arrow: rewind/fast forward
+- control+alt+l: activate view lyrics.
+
+---
 
 ### settings
 
@@ -174,6 +190,8 @@ In this tab you can customize some actions:
 - change pass button.
 - reset pass to default button.
 
+---
+
 ### option menu
 
 you can access in music player.
@@ -199,9 +217,12 @@ you can access in music player.
 - Sleep Timer: Allows you to schedule music to turn off. This feature is useful when you need quiet to rest.
 - add to collection: You can add the video you're watching to your collection.
 - Video Transcript: You can read what's in the video.
+- view lyrics: you can easily read the lyrics of the song you're listening.
 - Share: You can share videos with friends around you through the following supported services:
   - telegram.
   - facebook.
+
+---
 
 ## Contact Information:
 

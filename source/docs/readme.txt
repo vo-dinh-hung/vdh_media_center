@@ -45,6 +45,7 @@ Ctrl + Shift + T: Read Total Duration.
 control+t: Read Elapsed Time.
 1 through 9: Jump to 10% through 90% of the video duration.
 f2: view changelog.
+f1: view readme
 R: Toggle Repeat.
 Shift + N: Next Video.
 Shift + B: Previous Video.
@@ -69,6 +70,7 @@ control+r: see remaining time.
 up/down arrow: increase/decrease volume
 left/right arrow: rewind/fast forward
 control+alt+t: activate video transcript.
+control+alt+l: activate view lyrics.
 listen file shortcut:
 Below are the keyboard shortcuts in the music player interface (only applicable to the "listen to audio file" feature):
 listen file:
@@ -81,6 +83,7 @@ end: end of the video
 up/down arrow: increase/decrease volume
 left/right arrow: rewind/fast forward
 i: see info
+control+alt+l: activate view lyrics.
 listen Folder:
 n: next file
 b: previous file
@@ -94,6 +97,7 @@ end: end of the video
 (Minus) / = (Equal): Decrease / Increase the seek step (seconds jumped by arrows).
 up/down arrow: increase/decrease volume
 left/right arrow: rewind/fast forward
+control+alt+l: activate view lyrics.
 option menu:
 you can access in music player.
 play: activate play video.
@@ -117,6 +121,7 @@ go to time: allows you to jump to any music in a video.
 Sleep Timer: Allows you to schedule music to turn off. This feature is useful when you need quiet to rest.
 add to collection: You can add the video you're watching to your collection.
 Video Transcript: You can read what's in the video.
+view lyrics: you can easily read the lyrics of the song you're listening.
 Share: You can share videos with friends around you through the following supported services:
 telegram.
 facebook.
