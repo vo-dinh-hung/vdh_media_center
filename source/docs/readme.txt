@@ -12,6 +12,8 @@ Search History: Search history will be stored for convenient searching.
 Favorite Video: A list of favorite videos will appear when clicking this button. If there are no favorite videos, you will be prompted.
 Your collection: You can watch your favorite collections with the best videos.
 Watch History: Review the history of videos you've watched before.
+Play Queue: Shows the songs waiting to play. Add songs from the context menu of a list (Add to queue) or from the Options menu of the player. The queue plays in the order the songs were added and each song is removed from it when it starts. When the queue is empty, playback goes back to the list you were listening to, with the song after the one that was playing before the queue. Press alt+up / alt+down in the queue window to change the order. Press enter on a song to play it (control+enter plays it as audio); the applications key or shift+f10 opens the same context menu as the YouTube results, with Remove from queue instead of Add to queue. The window also has a Clear all queue button and a Close button.
+Download Queue: This allows you to download music from the queue to your computer.
 Listen to Audio File: You can listen to music from files on your computer.
 Add File: listen a file.
 Add Folder: listen A folder with many files inside.
@@ -36,6 +38,9 @@ We have assigned keyboard shortcuts for you to easily use the software and be fl
 home: beginning of the video
 end: end of a video
 control+k: copy link from clipboard.
+control+left/right: pan left and pan right.
+control+q: add the song you are listening to the play queue (player).
+control+shift+q: open the play queue (player).
 alt+g: go to channel.
 alt+b: open in Browser.
 alt+h: Search History.
@@ -112,7 +117,10 @@ No numbering and create subdirectory
 Numbering
 Numbering and create subdirectory
 download button: when press, activate download video.
+cancel button: cancel download or close interface.
 copy link : you can copy link to paste in editing tools.
+Add to queue: Adds the video to the play queue.
+Play queue: Opens the play queue.
 Open in Browser: Open search results in the default browser.
 Add to Favorite: You can add the videos you want to listen to to your favorites list.
 Video description: This section is for reading the video description. You can also export it to a .txt or .html file for reading.
@@ -121,6 +129,8 @@ go to time: allows you to jump to any music in a video.
 Sleep Timer: Allows you to schedule music to turn off. This feature is useful when you need quiet to rest.
 add to collection: You can add the video you're watching to your collection.
 Video Transcript: You can read what's in the video.
+Text only: Only display normal text.
+With timestamps: Display the time so you know exactly when it's there.
 view lyrics: you can easily read the lyrics of the song you're listening.
 Share: You can share videos with friends around you through the following supported services:
 telegram.
@@ -129,44 +139,56 @@ settings
 You can customize your favorite features in this settings section.
 General tab
 This tab will give you a few options:
-Automatically check for updates on startup.
-Start program automatically after login.
-Automatically detect YouTube links in clipboard on launch.
-Automatically check for yt-dlp updates on startup.
+Application language(requires restart): You can choose the language that is easiest for you to understand.
+Automatically check for updates on startup: the app looks for a newer version every time it opens.
+Start program automatically after login: the app launches by itself when you sign in to Windows.
+Automatically detect YouTube links in clipboard on launch: if you have copied a YouTube link, the app offers to use it as soon as it starts.
+Automatically check for yt-dlp updates on startup: keeps the download engine (yt-dlp) up to date so that downloading and searching keep working.
+Turn off sound in application: If you're feeling too dissatisfied with the sound system, this option will solve that problem.
+show logo when the application start: If selected, the logo sound will be on, and off if you deselect it.
 Player tab
 In this tab there will be a number of options used for the music player:
-Audio Output Device.
-Skip silence (Recommended only for music).
-Seeking Announcement Mode:
-Silent
-Read percentage
-Read time
-After Video Finishes:
-Close the player
-Replay video
-Do nothing
-Fast Forward Interval (Seconds).
-Rewind Interval (Seconds).
-Continue watching (Resume from last position)
-Save watch history.
-Save search history.
-Play button action:
-Play with the computer's default player
-Play with the application's default player
+Audio Output Device: choose which sound device (speakers, headphones...) the player uses.
+Skip silence (Recommended only for music): automatically jumps over silent parts of the audio.
+Equalizer: choose a preset (Off, Flat, Classical, Rock, Pop...) to adjust the sound tone, such as bass and treble, to suit the kind of audio.
+Normalize volume (keeps the loudness even between tracks).
+Seeking Announcement Mode: chooses what you hear when you rewind or fast forward.
+Silent: nothing is announced.
+Read percentage: announces the new position as a percentage of the video.
+Read time: announces the new position as a time.
+After Video Finishes: chooses what the player does when a video ends.
+Close the player: closes the player window.
+Replay video: plays the same video again.
+Do nothing: the player stays open and nothing happens.
+Fast Forward Interval (Seconds): how many seconds the right arrow key jumps forward.
+Rewind Interval (Seconds): how many seconds the left arrow key jumps back.
+Continue watching (Resume from last position): when you open a video again, it continues from where you stopped.
+Save watch history: records the videos you watch so they appear in Watch History.
+Save search history: keeps your search keywords so they appear in Search History.
+Play button action: chooses which player opens when you press the Play button.
+Play with the computer's default player: opens the video in the media player installed on your computer.
+Play with the application's default player: plays inside the app's own player.
+Audio channels: Chooses how the left and right audio channels are played: normal stereo, swapped channels, only the left ear, only the right ear, or mono (both channels mixed together). The change is applied to the music immediately.
+Stereo (Normal): It is applied default.
+Reverse stereo: Swap left and right channels.
+Left ear only: Left channel to the left speaker, right speaker silent.
+Right ear only: Right channel to the right speaker, left speaker silent.
+Mono: All channels will be merged into one channel.
+Auto pan audio (Ctrl+Left / Ctrl+Right are disabled): When selected, the music pans by itself, moving slowly between the left and right ears while it plays, with nothing to press. Ctrl+Left and Ctrl+Right do nothing while this option is on. Clear this option to pan by hand again.
 Download tab:
 In this tab you can customize some actions:
-download path edit box read only.
-change path button.
-reset path to default button.
+download path edit box read only: shows the folder where downloads are saved. It cannot be typed in; use the change path button to pick another folder.
+change path button: lets you pick a different folder for downloads.
+reset path to default button: goes back to the default download folder.
 Search tab
 In this tab you can customize search settings:
-Automatically search after voice input.
-Enable typing sounds in search box.
-select typing sound.
+Automatically search after voice input: searches right after you finish speaking, without pressing the search button.
+Enable typing sounds in search box: plays a sound for each key you type in the search box.
+select typing sound: choose which sound is played while typing.
 Data tab
 In this tab there will be a few options related to configuration data:
-Backup Configuration.
-Restore Configuration.
+Backup Configuration: saves your current settings to a file for safekeeping.
+Restore Configuration: loads your settings back from a backup file you saved earlier.
 Contact Information:
 If you would like to provide feedback, you can contact me through the following methods:
 Phone: 0366934510

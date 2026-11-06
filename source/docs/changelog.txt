@@ -1,3 +1,39 @@
+changes for version 3.0
+- readme has been updated.
+- Fixed a bug where the enter key could not be used to activate certain buttons.
+- cleaned up some hard code so the program closes faster when you use alt+f4.
+- A combo box has been added to switch between music playback channels.
+- An automatic panning option has been added. you can choose in settings.
+- Left and right panning is now supported with the shortcut key control + left/right.
+- You can now turn off the logo through an option in the settings.
+- add some new sounds.
+- fix bug in license agreement dialog.
+- Two new options have been added in transcript video.
+- Now, the cancel button will be available in download locations.
+- add Download Queue button to download song in queue list.
+- add new option in settings:
+  - Equalizer: choose a preset (Off, Flat, Classical, Rock, Pop...).
+  - Normalize volume (keeps the loudness even between tracks).
+- add new shortcut in option:
+  - control+q: add the song you are listening to the play queue
+  - control+shift+q: open the play queue
+- add Play Queue to Shows the songs waiting to play. You can also use alt+up/down arrow keys to switch between song positions.
+- in context menu have 2 option:
+  - Add to queue: Adds the video to the play queue.
+  - Play queue: Opens the play queue.
+- Now you can listen to the description of each component in the settings by pressing F1 on each option you are currently viewing.
+- add new option in settings to Turn off sound in application.
+- update yt-dlp to version 2026.10.26.
+- Download time calculation system is included.
+- fix bug in download dialog.
+- new sound has been updated.
+- The settings interface in the general tab has been redesigned.
+- new option in settings Allows switching between the two languages.
+- add vietnamese translation (thank VDH_technology has supported).
+- Now, you can add videos to your favorites list anywhere that supports it.
+- a critical vulnerability has been resolved.
+- update nvda client controller to the latest version.
+
 changes for version 2.9
 - readme has been updated.
 - add f1 in main interface to view readme.
