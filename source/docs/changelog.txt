@@ -1,3 +1,35 @@
+changes for version 3.1
+- Several customizations have been included for the license dialog box.
+- update new sounds.
+- The download time calculation has been improved.
+- add Radio Player: listen to radio stations from all over the world. You can browse stations by country or by language, search for a station by name, and press enter to play.
+- add new shortcut in radio player:
+  - ctrl+up/down: change the volume.
+  - ctrl+left/right: pan the audio left or right.
+  - page up/page down: previous or next station.
+  - ctrl+d: add the station to your favorites.
+  - ctrl+r: start or stop recording.
+  - ctrl+i: hear the song that is now playing.
+  - alt+s: stop, alt+k: copy the station link, alt+t: open the sleep timer, alt+g: change country.
+- The radio player will now automatically try to reconnect if the connection to the station is lost.
+- add Favorite Stations button to main interface to open your favorite radio stations. You can remove one station or clear them all.
+- add record radio: you can record the station you are listening to and the recordings are saved in the radio_recording folder.
+- add new Radio tab in settings:
+  - Recording Folder: change, reset or open the folder where recordings are saved.
+  - Recording format, bitrate, channels and sample rate.
+  - Stop recording automatically after the time you choose.
+  - Recording volume.
+- The Sleep timer now has an option to fade out the volume before closing the application, and it can also be used in the radio player.
+- add Recent Files and Recent Folders buttons to main interface so you can quickly play what you listened to before. Local music will no longer be saved in the watch history.
+- add new option in settings: Remember where I stopped in each audio file (Resume).
+- add Equalizer dialog (control+e in the player): in addition to the presets, you can now adjust the preamp and each band yourself.
+- add Shortcuts tab in settings so you can change, remove or reset the keyboard shortcuts of the main window and the player to the keys you like.
+- add new option in settings: Show license confirmation when the application starts. When it is turned off, the application opens straight away without the license confirmation.
+- add new option in settings: Auto pan cycle time (seconds, 1 - 60), to choose how fast the audio moves between the left and right ears when Auto pan audio is on.
+- Pressing F1 on the options of the new Radio and Shortcuts tabs, and on the new options above, now reads their description too.
+- The welcome dialog that appeared before the logo has been removed so the program starts faster.
+- update nvda controller to latest version.
+
 changes for version 3.0
 - readme has been updated.
 - Fixed a bug where the enter key could not be used to activate certain buttons.

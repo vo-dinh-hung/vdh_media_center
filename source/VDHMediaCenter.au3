@@ -53,16 +53,16 @@ Global $g_iStereoMode = 0 ; Player tab: audio channel mode, 0 = Stereo, 1 = Reve
 Func _VLC_Cleanup()
     If $oVLC_Player <> 0 Then
         DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_player_stop", "ptr", $oVLC_Player)
-        
+
         DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_player_release", "ptr", $oVLC_Player)
         $oVLC_Player = 0
     EndIf
-    
+
     If $oVLC_Inst <> 0 Then
         DllCall($hVLC_Dll, "none:cdecl", "libvlc_release", "ptr", $oVLC_Inst)
         $oVLC_Inst = 0
     EndIf
-    
+
     If $hVLC_Dll <> -1 Then
         DllClose($hVLC_Dll)
         $hVLC_Dll = -1
@@ -71,18 +71,18 @@ EndFunc
 
 Func _VLC_Direct_Init()
     If $hVLC_Dll <> -1 And $oVLC_Inst <> 0 Then Return True
-    
+
     DllCall("kernel32.dll", "bool", "SetDllDirectoryW", "wstr", $sVLC_Path)
-    
+
     Local $sDll = $sVLC_Path & "\libvlc.dll"
     If Not FileExists($sDll) Then Return False
-    
-    $hVLC_Dll = DllOpen($sDll)
-    
+
+    If $hVLC_Dll = -1 Then $hVLC_Dll = DllOpen($sDll)
+
     DllCall("kernel32.dll", "bool", "SetDllDirectoryW", "wstr", "")
 
     If $hVLC_Dll = -1 Then Return False
-    
+
     Local $aOptions = [ _
         "vlc", _
         "--plugin-path=" & $sVLC_Path & "\plugins", _
@@ -94,30 +94,30 @@ Func _VLC_Direct_Init()
         "--live-caching=1000", _
         "--no-stats" _
     ]
-    
+
     If $g_sAudioDeviceID <> "" Then
         _ArrayAdd($aOptions, "--mmdevice-audio-device=" & $g_sAudioDeviceID)
     EndIf
-    
+
     Local $iCount = UBound($aOptions)
     Local $tArgs = DllStructCreate("ptr[" & $iCount & "]")
     Local $aStructs[$iCount]
-    
+
     For $i = 0 To $iCount - 1
         $aStructs[$i] = DllStructCreate("char[" & StringLen($aOptions[$i]) + 1 & "]")
         DllStructSetData($aStructs[$i], 1, $aOptions[$i])
         DllStructSetData($tArgs, 1, DllStructGetPtr($aStructs[$i]), $i + 1)
     Next
-    
+
     Local $aRet = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_new", "int", $iCount, "ptr", DllStructGetPtr($tArgs))
-    
+
     If @error Or Not $aRet[0] Then
         DllClose($hVLC_Dll)
         $hVLC_Dll = -1
         Return False
     EndIf
     $oVLC_Inst = $aRet[0]
-    
+
     $aRet = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_media_player_new", "ptr", $oVLC_Inst)
     If @error Or Not $aRet[0] Then
         DllCall($hVLC_Dll, "none:cdecl", "libvlc_release", "ptr", $oVLC_Inst)
@@ -128,6 +128,22 @@ Func _VLC_Direct_Init()
     EndIf
     $oVLC_Player = $aRet[0]
     Return True
+EndFunc
+
+; Recreate the libvlc instance so that a new audio output device (Settings > Player) is used at once by the Player AND the
+; Radio (they share one instance). libvlc.dll stays loaded: unloading it while VLC still has worker threads is unsafe.
+Func _VLC_Reinit()
+    If $hVLC_Dll = -1 Then Return _VLC_Direct_Init()
+    _VLC_Direct_Stop()
+    If $oVLC_Player <> 0 Then
+        DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_player_release", "ptr", $oVLC_Player)
+        $oVLC_Player = 0
+    EndIf
+    If $oVLC_Inst <> 0 Then
+        DllCall($hVLC_Dll, "none:cdecl", "libvlc_release", "ptr", $oVLC_Inst)
+        $oVLC_Inst = 0
+    EndIf
+    Return _VLC_Direct_Init()
 EndFunc
 
 Func _VLC_GetAudioOutputs()
@@ -165,14 +181,14 @@ Func _VLC_Direct_GetRate()
     EndIf
 EndFunc
 
-Func _VLC_Direct_Play($sUrl)
+Func _VLC_Direct_Play($sUrl, $bAudioOnly = False)
     If Not _VLC_Direct_Init() Then Return
-    
+
     Local $iState = _VLC_Direct_GetState()
     If $iState > 0 And $iState < 5 Then
         DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_player_stop", "ptr", $oVLC_Player)
     EndIf
-    
+
     ; $sUrl có thể gồm 2 dòng: dòng 1 = link video, dòng 2 = link audio riêng (YouTube DASH) -> ghép bằng input-slave
     Local $aUrlParts = StringSplit(StringStripWS(StringReplace($sUrl, @CR, ""), 3), @LF, 2)
     Local $aRet = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_media_new_location", "ptr", $oVLC_Inst, "str", $aUrlParts[0])
@@ -181,14 +197,21 @@ Func _VLC_Direct_Play($sUrl)
     If UBound($aUrlParts) > 1 Then
         If StringStripWS($aUrlParts[1], 3) <> "" Then DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_add_option", "ptr", $pMedia, "str", ":input-slave=" & StringStripWS($aUrlParts[1], 3))
     EndIf
-    
+
     ; Volume normalization (Settings > Player): VLC's "normvol" audio filter, applied from this track on
     If $g_bNormalizeVolume Then DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_add_option", "ptr", $pMedia, "str", ":audio-filter=normvol")
 
+    ; Audio-only (Radio): never let libvlc open its own video window ("VLC (Direct3D11 output)"), it steals the keyboard focus.
+    ; Also drop the stale window handle left over from the Player tab.
+    If $bAudioOnly Then
+        DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_add_option", "ptr", $pMedia, "str", ":no-video")
+        DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_player_set_hwnd", "ptr", $oVLC_Player, "hwnd", 0)
+    EndIf
+
     DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_player_set_media", "ptr", $oVLC_Player, "ptr", $pMedia)
-    
+
     DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_release", "ptr", $pMedia)
-    
+
     _VLC_ApplyEqualizer()
     _VLC_ApplyStereoMode()
     DllCall($hVLC_Dll, "int:cdecl", "libvlc_media_player_play", "ptr", $oVLC_Player)
@@ -590,6 +613,17 @@ Func _VLC_ApplyEqualizer()
     If $g_iEqPreset >= 0 Then
         Local $aEq = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_audio_equalizer_new_from_preset", "uint", $g_iEqPreset)
         If Not @error And IsArray($aEq) Then $pEq = $aEq[0]
+    ElseIf $g_iEqPreset = -2 Then
+        Local $aEq2 = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_audio_equalizer_new")
+        If Not @error And IsArray($aEq2) Then
+            $pEq = $aEq2[0]
+            If $pEq Then
+                DllCall($hVLC_Dll, "int:cdecl", "libvlc_audio_equalizer_set_preamp", "ptr", $pEq, "float", $g_fEqPreamp)
+                For $iBand = 0 To 9
+                    DllCall($hVLC_Dll, "int:cdecl", "libvlc_audio_equalizer_set_amp_at_index", "ptr", $pEq, "float", $g_aEqBands[$iBand], "uint", $iBand)
+                Next
+            EndIf
+        EndIf
     EndIf
     DllCall($hVLC_Dll, "int:cdecl", "libvlc_media_player_set_equalizer", "ptr", $oVLC_Player, "ptr", $pEq)
     If $pEq Then DllCall($hVLC_Dll, "none:cdecl", "libvlc_audio_equalizer_release", "ptr", $pEq)
@@ -649,7 +683,7 @@ For $iMsg In $aGlobalMsgs
     DllCall("user32.dll", "bool", "ChangeWindowMessageFilter", "uint", $iMsg, "dword", 1)
 Next
 
-Global $version = "3.0"
+Global $version = "3.1"
 Global $YT_DLP_PATH = @ScriptDir & "\lib\yt-dlp.exe"
 ; Tiện ích lấy phụ đề YouTube (được đóng gói từ youtube_transcript.py).
 Global $YT_TRANSCRIPT_EXE = @ScriptDir & "\lib\youtube_transcript.exe"
@@ -758,6 +792,7 @@ Global $hDummyB ; "b" key: previous track (only active while a folder playlist i
 Global $hDummyCtrlHome, $hDummyCtrlEnd ; Ctrl+Home/Ctrl+End: first/last track (folder playlist only)
 Global $hDummyCtrlAltT ; Ctrl+Alt+T: mở Video Transcript
 Global $hDummyCtrlAltL ; Ctrl+Alt+L: View Lyrics
+Global $hDummyEq ; Ctrl+E: Equalizer
 Global $menu_item_lyrics = -1 ; Options > View Lyrics...
 ; --- Play queue (first in, first out; kept in memory, same 1-based layout as $aSearchIds) ---
 Global $g_aQueueIds[1] = [""], $g_aQueueTitles[1] = [""], $g_iQueueCount = 0
@@ -774,7 +809,7 @@ Global $g_sLastReportedText = "", $g_iLastReportedTime = 0
 Global $g_sCurrentVideoTitle = ""
 Global $g_sSearchFilter = "No Filter"
 Global $g_hSettingsGui, $g_hSettingsTab, $g_hSettingsDummyNext, $g_hSettingsDummyPrev
-Global $g_aSettingsHelp[48][2], $g_iSettingsHelpCount = 0 ; [handle điều khiển, nội dung mô tả] cho phím F1 trong Settings
+Global $g_aSettingsHelp[80][2], $g_iSettingsHelpCount = 0 ; [handle điều khiển, nội dung mô tả] cho phím F1 trong Settings
 Global $g_hGuiDL, $g_hTabDL, $g_hDummyNextDL, $g_hDummyPrevDL
 
 Global $g_iSleepTimerDuration = 0
@@ -820,7 +855,7 @@ Global $g_sSoundFile_Typing = ""
 Func _ResolveTypingSounds()
     $g_sTypingSoundDir = @ScriptDir & "\sounds\" & $g_sTypingSoundSet & "\"
     $g_bTypingSoundRandom = FileExists($g_sTypingSoundDir & "typing_1.wav")
-    
+
     ; Tìm file cho phím Space
     If FileExists($g_sTypingSoundDir & "space.wav") Then
         $g_sSoundFile_Space = $g_sTypingSoundDir & "space.wav"
@@ -829,7 +864,7 @@ Func _ResolveTypingSounds()
     Else
         $g_sSoundFile_Space = ""
     EndIf
-    
+
     ; Tìm file cho phím Backspace/Delete
     If FileExists($g_sTypingSoundDir & "delete.wav") Then
         $g_sSoundFile_Delete = $g_sTypingSoundDir & "delete.wav"
@@ -838,7 +873,7 @@ Func _ResolveTypingSounds()
     Else
         $g_sSoundFile_Delete = ""
     EndIf
-    
+
     ; Tìm file cho phím thường
     If FileExists($g_sTypingSoundDir & "typing.wav") Then
         $g_sSoundFile_Typing = $g_sTypingSoundDir & "typing.wav"
@@ -857,6 +892,7 @@ Global $g_iLastVkCode = 0
 Global $g_bAutoUpdate = IniRead($CONFIG_FILE, "Settings", "AutoUpdate", "true") == "true"
 Global $g_bAutoUpdateYTDLP = IniRead($CONFIG_FILE, "Settings", "AutoUpdateYTDLP", "true") == "true"
 Global $g_bMuteAppSounds = IniRead($CONFIG_FILE, "Settings", "MuteAppSounds", "false") == "true" ; Tắt toàn bộ âm thanh trong thư mục sounds (trừ âm thanh bàn phím)
+Global $g_bShowLicenseConfirm = IniRead($CONFIG_FILE, "Settings", "ShowLicenseConfirm", "true") == "true" ; Bat/tat buoc xac nhan license khi mo phan mem; tat thi khong phat dooropen.wav va vao phan mem luon
 Global $g_bShowLogo = IniRead($CONFIG_FILE, "Settings", "ShowLogo", "true") == "true" ; Bật/tắt logo khởi động; tắt thì chỉ phát âm thanh cửa rồi vào phần mềm
 Global $g_bSaveHistory = IniRead($CONFIG_FILE, "Settings", "SaveHistory", "true") == "true"
 Global $g_bSaveSearchHistory = IniRead($CONFIG_FILE, "Settings", "SaveSearchHistory", "true") == "true"
@@ -880,7 +916,7 @@ If StringStripWS($g_sDownloadPath, 3) = "" Then $g_sDownloadPath = @ScriptDir & 
 Global $PLAYBACK_POSITIONS_FILE = $SETTINGS_DIR & "\playback_positions.dat"
 Global $g_bContinueWatching = IniRead($CONFIG_FILE, "Settings", "ContinueWatching", "true") == "true"
 $g_iEqPreset = Int(IniRead($CONFIG_FILE, "Settings", "EqualizerPreset", "-1"))
-If $g_iEqPreset < -1 Or $g_iEqPreset > 17 Then $g_iEqPreset = -1
+If $g_iEqPreset < -2 Or $g_iEqPreset > 17 Then $g_iEqPreset = -1
 $g_bNormalizeVolume = IniRead($CONFIG_FILE, "Settings", "NormalizeVolume", "false") == "true"
 $g_iStereoMode = Int(IniRead($CONFIG_FILE, "Settings", "StereoMode", "0"))
 If $g_iStereoMode < 0 Or $g_iStereoMode > 4 Then $g_iStereoMode = 0
@@ -891,6 +927,59 @@ $g_bPanDebug = IniRead($CONFIG_FILE, "Settings", "PanDebug", "false") == "true"
 $g_bAutoPan = IniRead($CONFIG_FILE, "Settings", "AutoPan", "false") == "true"
 $g_iAutoPanPeriod = Int(IniRead($CONFIG_FILE, "Settings", "AutoPanPeriod", "8"))
 If $g_iAutoPanPeriod < 1 Or $g_iAutoPanPeriod > 60 Then $g_iAutoPanPeriod = 8
+
+; ---- Resume theo tung file nghe, Recent files/folders, Radio, Equalizer tuy chinh, Phim tat tuy chinh ----
+Global $g_bResumeLocal = IniRead($CONFIG_FILE, "Settings", "ResumeLocal", "true") == "true"
+Global $LOCAL_POSITIONS_FILE = $SETTINGS_DIR & "\local_positions.dat"
+Global $RECENT_FILES_FILE = $SETTINGS_DIR & "\recent_files.dat"
+Global $RECENT_FOLDERS_FILE = $SETTINGS_DIR & "\recent_folders.dat"
+Global $RECENT_MAX = 50
+Global $g_sLocalPlaylistFolder = ""
+Global $g_aEqBands[10] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+Global $g_fEqPreamp = 0
+_EQ_LoadCustom()
+Global $g_aRadioCountries = 0, $g_aRadioLanguages = 0, $g_sRadioServer = ""
+
+; Radio: favorite stations file and recording settings (formats = the audio formats of the Download feature)
+Global $RADIO_FAV_FILE = $SETTINGS_DIR & "\radio_favorites.dat"
+Global $g_aRadioRecFormats[4] = ["M4A", "MP3", "OGG", "WAV"]
+Global $g_aRadioRecBitrates[4] = [128, 192, 256, 320]
+Global $g_aRadioRecRates[4] = [0, 22050, 44100, 48000] ; 0 = same as the station
+Global $g_sRadioRecPath = IniRead($CONFIG_FILE, "Settings", "RadioRecPath", @ScriptDir & "\radio_recording")
+If StringStripWS($g_sRadioRecPath, 3) = "" Then $g_sRadioRecPath = @ScriptDir & "\radio_recording"
+Global $g_sRadioRecFormat = StringUpper(IniRead($CONFIG_FILE, "Settings", "RadioRecFormat", "MP3"))
+If Not StringRegExp($g_sRadioRecFormat, "^(M4A|MP3|OGG|WAV)$") Then $g_sRadioRecFormat = "MP3"
+Global $g_iRadioRecBitrate = Int(IniRead($CONFIG_FILE, "Settings", "RadioRecBitrate", "192"))
+If $g_iRadioRecBitrate <> 128 And $g_iRadioRecBitrate <> 192 And $g_iRadioRecBitrate <> 256 And $g_iRadioRecBitrate <> 320 Then $g_iRadioRecBitrate = 192
+Global $g_iRadioRecChannels = Int(IniRead($CONFIG_FILE, "Settings", "RadioRecChannels", "2"))
+If $g_iRadioRecChannels <> 1 Then $g_iRadioRecChannels = 2
+Global $g_iRadioRecRate = Int(IniRead($CONFIG_FILE, "Settings", "RadioRecSampleRate", "0"))
+If $g_iRadioRecRate <> 22050 And $g_iRadioRecRate <> 44100 And $g_iRadioRecRate <> 48000 Then $g_iRadioRecRate = 0
+Global $g_iRadioRecAutoStop = Int(IniRead($CONFIG_FILE, "Settings", "RadioRecAutoStop", "0")) ; minutes, 0 = never
+If $g_iRadioRecAutoStop < 0 Then $g_iRadioRecAutoStop = 0
+If $g_iRadioRecAutoStop > 1440 Then $g_iRadioRecAutoStop = 1440
+Global $g_iRadioRecVolume = Int(IniRead($CONFIG_FILE, "Settings", "RadioRecVolume", "100")) ; 0-100, same scale as the radio volume
+If $g_iRadioRecVolume < 0 Then $g_iRadioRecVolume = 0
+If $g_iRadioRecVolume > 100 Then $g_iRadioRecVolume = 100
+Global $g_iRadioRecPid = 0, $g_sRadioRecFile = "", $g_sRadioRecStation = "", $g_hRadioRecStart = 0
+Global $g_pRecPlayer = 0 ; second libvlc media player that records the station in the background (see _RadioRec_Start)
+; MP3: VLC saves the stream untouched (TS, no real-time encoding = no stutter), ffmpeg converts it to MP3 afterwards
+Global $g_bRecPassthrough = False, $g_sRecTsFile = ""
+Global $g_aRecConv[1][4], $g_iRecConvN = 0 ; running conversions: pid, ts file, mp3 file, ffmpeg messages
+
+; Sleep timer fade-out (shared by the Player and the Radio)
+Global $g_bSleepFade = (IniRead($CONFIG_FILE, "Settings", "SleepFade", "true") = "true")
+Global $g_iSleepFadeSecs = Int(IniRead($CONFIG_FILE, "Settings", "SleepFadeSecs", "20"))
+If $g_iSleepFadeSecs < 1 Then $g_iSleepFadeSecs = 1
+If $g_iSleepFadeSecs > 600 Then $g_iSleepFadeSecs = 600
+Global $g_bSleepFading = False, $g_hSleepFadeTimer = 0
+
+; sounds\downloading.wav loops while a download is running (see _DLSound_Start / _DLSound_Stop)
+Global $g_bDLSoundWanted = False, $g_bDLSoundOn = False, $g_bDLSoundReal = False, $g_hDLSoundAt = 0, $g_iDLSoundDelay = 0
+Global $g_iHKCount = 0
+Global $g_aHK[80][8], $g_aHKWork[80], $g_aHKListIdx[1]
+Global $g_aHKFixedMain[2][2]
+_HK_Init()
 
 ; ============================================================================
 ; Localization: language files live in <app folder>\lang\*.lng (UTF-8).
@@ -1072,6 +1161,8 @@ Func _Lang_DisplayName($i)
 EndFunc
 
 If Not FileExists($g_sDownloadPath) Then DirCreate($g_sDownloadPath)
+If Not FileExists($g_sRadioRecPath) Then DirCreate($g_sRadioRecPath)
+_RadioRec_CleanupTemp()
 
 If Not FileExists($YT_DLP_PATH) Then
     MsgBox(16, _T("Error"), _T("The file lib\yt-dlp.exe does not exist!") & @CRLF & _T("Please double-check the lib folder."))
@@ -1081,15 +1172,28 @@ EndIf
 ; Da chap nhan  : phat dooropen.wav roi moi toi logo.
 ; Chua chap nhan: hien hop thoai License Agreement (license_agreement.wav);
 ;                 Accept -> dooropen.wav roi toi logo; Decline -> doorclose.wav roi thoat phan mem.
-If IniRead($CONFIG_FILE, "License", "Accepted", "false") = "true" Then
-    _Play_DoorOpen_Welcome()
-Else
-    If Not _Show_License_Window() Then
-        _AppSoundPlaySync(@ScriptDir & "\sounds\doorclose.wav")
-        Exit
+; Tuy chon Settings > General "Show license confirmation when the application starts":
+;   Tat: bo qua hoan toan buoc license, KHONG phat dooropen.wav, vao phan mem luon.
+;   Bat: giu nguyen hanh vi o tren, them thong bao bang van ban:
+;        - Da chap nhan truoc do: doc "License accepted" cung luc voi dooropen.wav.
+;        - Bam Accept : phat accept.wav va doc van ban da chap nhan license (khong dung hop thoai).
+;        - Bam Decline: phat decline.wav va doc van ban neu khong chap nhan thi vui long khong su dung phan mem.
+If $g_bShowLicenseConfirm Then
+    If IniRead($CONFIG_FILE, "License", "Accepted", "false") = "true" Then
+        _NVDA_Speak(_T("License accepted. You have already accepted the license."))
+        _Play_DoorOpen_Welcome()
+    Else
+        If Not _Show_License_Window() Then
+            _NVDA_Speak(_T("If you do not accept the license, please do not use this software."))
+            _AppSoundPlaySync(@ScriptDir & "\sounds\decline.wav")
+            _AppSoundPlaySync(@ScriptDir & "\sounds\doorclose.wav")
+            Exit
+        EndIf
+        IniWrite($CONFIG_FILE, "License", "Accepted", "true")
+        _NVDA_Speak(_T("You have accepted the license."))
+        _AppSoundPlaySync(@ScriptDir & "\sounds\accept.wav")
+        _Play_DoorOpen_Welcome()
     EndIf
-    IniWrite($CONFIG_FILE, "License", "Accepted", "true")
-    _Play_DoorOpen_Welcome()
 EndIf
 
 ; Logo khoi dong (co the tat trong Settings > General). Khi tat: chi phat am thanh cua o tren roi vao phan mem.
@@ -1110,7 +1214,7 @@ If $g_bShowLogo Then
     Local $hStartTimer = TimerInit()
     While TimerDiff($hStartTimer) < 500
         GUIGetMsg()
-        Sleep(3000)
+        Sleep(6000)
     WEnd
     GUIDelete($lding)
 EndIf
@@ -1119,7 +1223,7 @@ EndIf
 ; Thoat ung dung bang Preferences > Exit hoac Ctrl+W.
 ; Giu $WS_SYSMENU de thanh menu (Preferences/Help) dieu huong Trai/Phai binh thuong;
 ; nut Close (X) bi vo hieu hoa ngay duoi day thay vi bo han style.
-$mainform = GUICreate(_TF("VDHMediaCenter version{1}", $version), 300, 455, -1, -1, BitOR($WS_CAPTION, $WS_POPUP, $WS_SYSMENU))
+$mainform = GUICreate(_TF("VDHMediaCenter version{1}", $version), 300, 590, -1, -1, BitOR($WS_CAPTION, $WS_POPUP, $WS_SYSMENU))
 Local $hSysMenuMain = DllCall("user32.dll", "handle", "GetSystemMenu", "hwnd", $mainform, "bool", 0)
 If Not @error And IsArray($hSysMenuMain) Then DllCall("user32.dll", "bool", "EnableMenuItem", "handle", $hSysMenuMain[0], "uint", 0xF060, "uint", 0x0001) ; SC_CLOSE, MF_BYCOMMAND|MF_GRAYED
 GUISetBkColor($COLOR_BLUE)
@@ -1130,16 +1234,20 @@ $label = GUICtrlCreateLabel(_TF("{1} and warm welcome to VDHMediaCenter applicat
 GUICtrlSetFont(-1, 14, 800)
 GUICtrlSetColor(-1, 0xFFFFFF)
 
-Global $btn_Menu_DL = GUICtrlCreateButton(_T("Download from link (Alt+D)"), 50, 60, 200, 40)
-Global $btn_Menu_PL = GUICtrlCreateButton(_T("Play YouTube link (Alt+P)"), 50, 105, 200, 40)
-Global $btn_Menu_Direct = GUICtrlCreateButton(_T("Play direct link (Alt+L)"), 50, 150, 200, 40)
-Global $btn_Menu_SC = GUICtrlCreateButton(_T("Search on YouTube (Alt+S)"), 50, 195, 200, 40)
-Global $btn_Menu_CL = GUICtrlCreateButton(_T("Your Collections (Alt+C)"), 50, 240, 200, 40)
-Global $btn_Menu_Audio = GUICtrlCreateButton(_T("Listen to Audio File (Alt+U)"), 50, 285, 200, 40)
-Global $btn_Menu_Queue = GUICtrlCreateButton(_T("Play Queue (Alt+Q)"), 50, 330, 200, 40)
-Global $btn_Menu_DQ = GUICtrlCreateButton(_T("Download Queue (Alt+Z)"), 50, 375, 200, 40)
-Global $btn_Menu_FV = GUICtrlCreateButton(_T("Favorites (Alt+F)"), 10, 420, 100, 30)
-Global $btn_Menu_WS = GUICtrlCreateButton(_T("Watch History (Alt+W)"), 120, 420, 150, 30)
+Global $btn_Menu_DL = GUICtrlCreateButton(_T("Download from link (Alt+D)"), 50, 60, 200, 36)
+Global $btn_Menu_PL = GUICtrlCreateButton(_T("Play YouTube link (Alt+P)"), 50, 100, 200, 36)
+Global $btn_Menu_Direct = GUICtrlCreateButton(_T("Play direct link (Alt+L)"), 50, 140, 200, 36)
+Global $btn_Menu_SC = GUICtrlCreateButton(_T("Search on YouTube (Alt+S)"), 50, 180, 200, 36)
+Global $btn_Menu_CL = GUICtrlCreateButton(_T("Your Collections (Alt+C)"), 50, 220, 200, 36)
+Global $btn_Menu_Audio = GUICtrlCreateButton(_T("Listen to Audio File (Alt+U)"), 50, 260, 200, 36)
+Global $btn_Menu_RF = GUICtrlCreateButton(_T("Recent Files (Alt+E)"), 50, 300, 200, 36)
+Global $btn_Menu_RD = GUICtrlCreateButton(_T("Recent Folders (Alt+O)"), 50, 340, 200, 36)
+Global $btn_Menu_Radio = GUICtrlCreateButton(_T("Radio Player (Alt+R)"), 50, 380, 200, 36)
+Global $btn_Menu_RadioFav = GUICtrlCreateButton(_T("Favorite Stations (Alt+V)"), 50, 420, 200, 36)
+Global $btn_Menu_Queue = GUICtrlCreateButton(_T("Play Queue (Alt+Q)"), 50, 460, 200, 36)
+Global $btn_Menu_DQ = GUICtrlCreateButton(_T("Download Queue (Alt+Z)"), 50, 500, 200, 36)
+Global $btn_Menu_FV = GUICtrlCreateButton(_T("Favorites (Alt+F)"), 10, 545, 100, 30)
+Global $btn_Menu_WS = GUICtrlCreateButton(_T("Watch History (Alt+W)"), 120, 545, 150, 30)
 
 Global $menu_main = GUICtrlCreateMenu(_T("Preferences"))
 Global $menu_settings = GUICtrlCreateMenuItem(_T("Settings... (Ctrl+Shift+S)"), $menu_main)
@@ -1279,7 +1387,7 @@ Func _ShowDirectLinkPlayer()
                     MsgBox(16, _T("Error"), _T("Please enter the Direct URL!"))
                 Else
                     GUIDelete($hDirectGui)
-                    
+
                     ; Create loading dialog
                     Local $hLoading = GUICreate(_T("Loading"), 250, 80, -1, -1, BitOR($WS_POPUP, $WS_BORDER), BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW))
                     GUICtrlCreateLabel(_T("Loading stream, please wait..."), 10, 25, 230, 30, $SS_CENTER)
@@ -1287,14 +1395,14 @@ Func _ShowDirectLinkPlayer()
                     GUISetState(@SW_SHOW, $hLoading)
                     ; Thông báo cho NVDA
                     _NVDA_Speak(_T("Loading stream, please wait."))
-                    
+
                     ; Phát loading.wav (không chặn) và ok.wav
-                    _AppSoundPlay(@ScriptDir & "\sounds\loading.wav") 
+                    _AppSoundPlay(@ScriptDir & "\sounds\loading.wav")
                     _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
-                    
+
                     ; Giảm trì hoãn để phản hồi nhanh hơn
                     Sleep(30)
-                    
+
                     _PlayInternal($sUrl, _T("Direct Link Player"), False, $hLoading, False, "")
                     GUISetState(@SW_SHOW, $mainform)
                     Return
@@ -1310,30 +1418,36 @@ Local $hDummyEscMain = GUICtrlCreateDummy()
 Local $hDummySettings = GUICtrlCreateDummy()
 Local $hDummyEnterMain = GUICtrlCreateDummy()
 
-Local $aAccel[18][2] = [ _
-    ["!q", $btn_Menu_Queue], _
-    ["!z", $btn_Menu_DQ], _
-    ["^+u", $hDummyUpdateApp], _
-    ["^+y", $hDummyUpdateYTDLP], _
-    ["{F1}", $hDummyReadme], _
-    ["!d", $btn_Menu_DL], _
-    ["!p", $btn_Menu_PL], _
-    ["!l", $btn_Menu_Direct], _
-    ["!s", $btn_Menu_SC], _
-    ["!c", $btn_Menu_CL], _
-    ["!u", $btn_Menu_Audio], _
-    ["!f", $btn_Menu_FV], _
-    ["!w", $btn_Menu_WS], _
-    ["{F2}", $hDummyChangelog], _
-    ["^w", $menu_exit], _
-    ["{ESC}", $hDummyEscMain], _
-    ["^+s", $hDummySettings], _
-    ["{ENTER}", $hDummyEnterMain] _
-]
-GUISetAccelerators($aAccel, $mainform)
+; Phim tat cua cua so chinh: ghep tu bang phim tat tuy chinh (Settings > Shortcuts)
+$g_aHKFixedMain[0][0] = "{ESC}"
+$g_aHKFixedMain[0][1] = $hDummyEscMain
+$g_aHKFixedMain[1][0] = "{ENTER}"
+$g_aHKFixedMain[1][1] = $hDummyEnterMain
+_HK_SetHandle("main_download", $btn_Menu_DL, $btn_Menu_DL)
+_HK_SetHandle("main_play", $btn_Menu_PL, $btn_Menu_PL)
+_HK_SetHandle("main_direct", $btn_Menu_Direct, $btn_Menu_Direct)
+_HK_SetHandle("main_search", $btn_Menu_SC, $btn_Menu_SC)
+_HK_SetHandle("main_collections", $btn_Menu_CL, $btn_Menu_CL)
+_HK_SetHandle("main_audio", $btn_Menu_Audio, $btn_Menu_Audio)
+_HK_SetHandle("main_recent_files", $btn_Menu_RF, $btn_Menu_RF)
+_HK_SetHandle("main_recent_folders", $btn_Menu_RD, $btn_Menu_RD)
+_HK_SetHandle("main_radio", $btn_Menu_Radio, $btn_Menu_Radio)
+_HK_SetHandle("main_radio_fav", $btn_Menu_RadioFav, $btn_Menu_RadioFav)
+_HK_SetHandle("main_queue", $btn_Menu_Queue, $btn_Menu_Queue)
+_HK_SetHandle("main_dq", $btn_Menu_DQ, $btn_Menu_DQ)
+_HK_SetHandle("main_fav", $btn_Menu_FV, $btn_Menu_FV)
+_HK_SetHandle("main_history", $btn_Menu_WS, $btn_Menu_WS)
+_HK_SetHandle("main_settings", $hDummySettings, $menu_settings)
+_HK_SetHandle("main_readme", $hDummyReadme, $menu_readme)
+_HK_SetHandle("main_changelog", $hDummyChangelog, 0)
+_HK_SetHandle("main_update_app", $hDummyUpdateApp, 0)
+_HK_SetHandle("main_update_ytdlp", $hDummyUpdateYTDLP, 0)
+_HK_SetHandle("main_exit", $menu_exit, 0)
+_HK_ApplyMain()
 
 If $g_bAutoDetectLink Then _AutoDetectClipboardLink()
 _AddDefenderExclusion()
+_Recent_MigrateHistory() ; mot lan: chuyen cac bai nghe cuc bo cu tu Watch History sang Recent Files
 
 ; Auto update check if enabled (app update and/or yt-dlp update)
 If $g_bAutoUpdate Or $g_bAutoUpdateYTDLP Then
@@ -1342,7 +1456,7 @@ EndIf
 
 While 1
     Local $msg = GUIGetMsg()
-    
+
     ; Handle Enter key for buttons on Main GUI
     If $msg = $hDummyEnterMain Then
         Local $hFocus = ControlGetHandle($mainform, "", ControlGetFocus($mainform))
@@ -1367,6 +1481,14 @@ While 1
                 $msg = $btn_Menu_Queue
             Case GUICtrlGetHandle($btn_Menu_DQ)
                 $msg = $btn_Menu_DQ
+            Case GUICtrlGetHandle($btn_Menu_RF)
+                $msg = $btn_Menu_RF
+            Case GUICtrlGetHandle($btn_Menu_RD)
+                $msg = $btn_Menu_RD
+            Case GUICtrlGetHandle($btn_Menu_Radio)
+                $msg = $btn_Menu_Radio
+            Case GUICtrlGetHandle($btn_Menu_RadioFav)
+                $msg = $btn_Menu_RadioFav
         EndSwitch
     EndIf
 
@@ -1408,6 +1530,22 @@ While 1
         Case $btn_Menu_Audio
             _GlobalSoundPlay("sounds/enter.wav", "system")
             _RunSubWindow("_ListenToAudioFile")
+
+        Case $btn_Menu_RF
+            _GlobalSoundPlay("sounds/enter.wav", "system")
+            _RunSubWindow("_ShowRecentFiles")
+
+        Case $btn_Menu_RD
+            _GlobalSoundPlay("sounds/enter.wav", "system")
+            _RunSubWindow("_ShowRecentFolders")
+
+        Case $btn_Menu_Radio
+            _GlobalSoundPlay("sounds/enter.wav", "system")
+            _RunSubWindow("_ShowRadioPlayer")
+
+        Case $btn_Menu_RadioFav
+            _GlobalSoundPlay("sounds/enter.wav", "system")
+            _RunSubWindow("_ShowRadioFavorites")
 
         Case $btn_Menu_Queue
             _GlobalSoundPlay("sounds/enter.wav", "system")
@@ -1512,7 +1650,11 @@ EndFunc
 ; hiển thị % của từng luồng thì thanh sẽ tụt về 0 giữa chừng. Ở đây gộp tất cả các luồng
 ; (và các mục trong playlist) thành MỘT thanh liền mạch 0 -> 100%.
 Func _DL_NewProgressState()
-    Local $aP[7] = [1, 1, 0, 1, 0, "", 0]
+    ; [7] = kích thước (byte) luồng hiện tại, 0 = chưa biết   [8] = tổng byte các luồng đã xong của mục hiện tại
+    ; [9] = số luồng đã xong có biết kích thước                 [10] = tổng byte các mục đã xong  [11] = số mục đã xong có biết kích thước
+    ; [12] = mốc thời gian lấy mẫu tốc độ gần nhất  [13] = tỉ lệ tại mốc đó  [14] = tốc độ làm mịn (tỉ lệ/giây)
+    ; [15] = mốc thời gian khi tiến độ thật xuất hiện lần đầu (0 = chưa có)
+    Local $aP[16] = [1, 1, 0, 1, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     Return $aP
 EndFunc
 
@@ -1520,7 +1662,7 @@ EndFunc
 ; (100% chỉ được đặt khi tiến trình đã thực sự kết thúc, vì sau khi tải xong còn bước ghép/chuyển đổi.)
 Func _DL_FeedProgress(ByRef $aP, $sChunk)
     $aP[5] &= $sChunk
-    Local $i, $aM, $sLine, $aLines, $iLast = -1
+    Local $i, $aM, $sLine, $aLines, $iLast = -1, $nItemBytes, $iKnownStr, $nSz
     If $aP[5] <> "" Then
         $aLines = StringSplit(StringReplace($aP[5], @CR, @LF), @LF, 2)
         $iLast = UBound($aLines) - 1
@@ -1531,6 +1673,16 @@ Func _DL_FeedProgress(ByRef $aP, $sChunk)
         If StringRegExp($sLine, "^\[download\] Downloading item \d+ of \d+") Then
             $aM = StringRegExp($sLine, "item (\d+) of (\d+)", 1)
             If Not @error Then
+                ; Chốt dung lượng mục vừa xong (nếu biết đủ) để ước lượng các mục còn lại chính xác hơn
+                $nItemBytes = $aP[8] + $aP[7]
+                $iKnownStr = $aP[9] + (($aP[7] > 0) ? 1 : 0)
+                If $nItemBytes > 0 And $iKnownStr >= $aP[2] Then
+                    $aP[10] += $nItemBytes
+                    $aP[11] += 1
+                EndIf
+                $aP[7] = 0
+                $aP[8] = 0
+                $aP[9] = 0
                 $aP[0] = Number($aM[0])
                 $aP[1] = Number($aM[1])
                 $aP[2] = 0
@@ -1543,33 +1695,99 @@ Func _DL_FeedProgress(ByRef $aP, $sChunk)
             $aM = StringRegExp($sLine, "format\(s\):\s*(\S+)", 1)
             If Not @error Then $aP[3] = UBound(StringSplit($aM[0], "+", 2))
         ElseIf StringRegExp($sLine, "^\[download\] Destination:") Then
+            If $aP[7] > 0 Then ; chốt dung lượng luồng trước
+                $aP[8] += $aP[7]
+                $aP[9] += 1
+            EndIf
+            $aP[7] = 0
             $aP[2] += 1
             $aP[4] = 0
             $aP[6] = 1
         ElseIf StringInStr($sLine, "has already been downloaded") Then
+            If $aP[7] > 0 Then
+                $aP[8] += $aP[7]
+                $aP[9] += 1
+            EndIf
+            $aP[7] = 0
             $aP[2] += 1
             $aP[4] = 100
             $aP[6] = 1
         Else
-            $aM = StringRegExp($sLine, "^\[download\]\s+(\d+(?:\.\d+)?)%", 1)
+            ; vd: "[download]  45.0% of   5.00MiB at  1.20MiB/s ETA 00:03" (cũng nhận "of ~ 5.00MiB")
+            $aM = StringRegExp($sLine, "^\[download\]\s+(\d+(?:\.\d+)?)%(?:\s+of\s+~?\s*(\d+(?:\.\d+)?)\s*([KMGT]?i?B))?", 1)
             If Not @error Then
                 If $aP[2] < 1 Then $aP[2] = 1
                 $aP[4] = Number($aM[0])
+                If UBound($aM) >= 3 Then
+                    $nSz = _DL_ParseSize($aM[1], $aM[2])
+                    If $nSz > 0 Then $aP[7] = $nSz
+                EndIf
                 $aP[6] = 1
             EndIf
         EndIf
     Next
 
+    Local $nFrac = _DL_Fraction($aP)
+    If $nFrac < 0 Then Return -1
+    Return Int($nFrac * 100)
+EndFunc
+
+; Đổi "5.00" + "MiB" thành số byte.
+Func _DL_ParseSize($sNum, $sUnit)
+    Local $nMul = 1
+    Switch StringUpper(StringLeft($sUnit, 1))
+        Case "K"
+            $nMul = 1024
+        Case "M"
+            $nMul = 1048576
+        Case "G"
+            $nMul = 1073741824
+        Case "T"
+            $nMul = 1099511627776
+    EndSwitch
+    Return Number($sNum) * $nMul
+EndFunc
+
+; Tỉ lệ hoàn thành tổng thể (số thực 0 -> 0.99), hoặc -1 nếu chưa có thông tin tiến độ.
+; Tính theo DUNG LƯỢNG THẬT (byte) của từng luồng/mục khi yt-dlp báo kích thước, nên luồng lớn (video)
+; và luồng nhỏ (audio) được cân đúng trọng số; luồng/mục chưa biết kích thước được ước bằng mức trung bình
+; của những phần đã biết. Nếu chưa biết kích thước thì quay về cách chia đều theo số luồng/số mục.
+Func _DL_Fraction(ByRef $aP)
     If Not $aP[6] Then Return -1
     Local $iTotStreams = $aP[3]
     If $aP[2] > $iTotStreams Then $iTotStreams = $aP[2]
+    If $iTotStreams < 1 Then $iTotStreams = 1
     Local $iDoneStreams = $aP[2] - 1
     If $iDoneStreams < 0 Then $iDoneStreams = 0
-    Local $nStream = ($iDoneStreams + $aP[4] / 100) / $iTotStreams
-    Local $nAll = (($aP[0] - 1) + $nStream) / $aP[1] * 100
-    If $nAll > 99 Then $nAll = 99
+    Local $nPct = $aP[4] / 100
+    Local $nItem, $nItemTotal = 0
+
+    If $aP[9] >= $iDoneStreams And ($aP[7] > 0 Or $aP[9] > 0) Then
+        Local $nCur = $aP[7]
+        Local $iKnown = $aP[9]
+        If $nCur > 0 Then $iKnown += 1
+        Local $nAvg = ($aP[8] + $nCur) / $iKnown
+        If $nCur <= 0 Then $nCur = $nAvg
+        Local $iRemStreams = $iTotStreams - $iDoneStreams - 1
+        If $iRemStreams < 0 Then $iRemStreams = 0
+        $nItemTotal = $aP[8] + $nCur + $iRemStreams * $nAvg
+        $nItem = ($aP[8] + $nCur * $nPct) / $nItemTotal
+    Else
+        $nItem = ($iDoneStreams + $nPct) / $iTotStreams
+    EndIf
+
+    Local $nAll
+    Local $iItemsDone = $aP[0] - 1
+    If $aP[1] > 1 And $nItemTotal > 0 And $aP[11] >= $iItemsDone Then
+        Local $nAvgItem = ($aP[10] + $nItemTotal) / ($iItemsDone + 1)
+        Local $nTotAll = $aP[10] + $nItemTotal + ($aP[1] - $aP[0]) * $nAvgItem
+        $nAll = ($aP[10] + $nItemTotal * $nItem) / $nTotAll
+    Else
+        $nAll = ($iItemsDone + $nItem) / $aP[1]
+    EndIf
+    If $nAll > 0.99 Then $nAll = 0.99
     If $nAll < 0 Then $nAll = 0
-    Return Int($nAll)
+    Return $nAll
 EndFunc
 
 ; Đổi số giây thành chuỗi dễ đọc: "5s", "2m 05s", "1h 02m 05s" (dịch được qua file ngôn ngữ).
@@ -1584,20 +1802,50 @@ Func _DL_FormatDuration($iSec)
     Return _TF("{1}s", $iS)
 EndFunc
 
-; Ước lượng thời gian còn lại (giây) từ thời gian đã trôi qua và % đã tải. Trả về -1 nếu chưa đủ dữ liệu.
-Func _DL_RemainingSecs($iStartTimer, $iPct)
-    Local $nElapsed = TimerDiff($iStartTimer) / 1000
-    If $iPct <= 0 Or $nElapsed < 2 Then Return -1
-    If $iPct >= 100 Then Return 0
-    Return Int($nElapsed * (100 - $iPct) / $iPct)
+; Ước lượng thời gian còn lại (giây). Trả về -1 nếu chưa đủ dữ liệu.
+; Cách tính: tỉ lệ hoàn thành THẬT (theo byte, xem _DL_Fraction) chia cho tốc độ tiến độ, trong đó tốc độ là
+; trung bình của (a) tốc độ trung bình kể từ lúc yt-dlp bắt đầu báo tiến độ (không tính thời gian lấy thông
+; tin ban đầu) và (b) tốc độ gần đây làm mịn (lấy mẫu mỗi giây) để phản ứng khi mạng nhanh/chậm đi.
+Func _DL_RemainingSecs(ByRef $aP)
+    Local $nFrac = _DL_Fraction($aP)
+    If $nFrac < 0 Then Return -1
+    If $aP[15] = 0 Then ; lần đầu có tiến độ: đặt mốc, chưa tính được
+        $aP[15] = TimerInit()
+        $aP[12] = $aP[15]
+        $aP[13] = $nFrac
+        Return -1
+    EndIf
+    Local $nSince = TimerDiff($aP[15]) / 1000
+    Local $nDt = TimerDiff($aP[12]) / 1000
+    If $nDt >= 1 Then ; lấy mẫu tốc độ tức thời mỗi giây rồi làm mịn
+        Local $nDf = $nFrac - $aP[13]
+        If $nDf < 0 Then $nDf = 0
+        Local $nInst = $nDf / $nDt
+        If $aP[14] <= 0 Then
+            $aP[14] = $nInst
+        Else
+            $aP[14] = 0.3 * $nInst + 0.7 * $aP[14]
+        EndIf
+        $aP[12] = TimerInit()
+        $aP[13] = $nFrac
+    EndIf
+    If $nFrac >= 0.99 Then Return 0 ; phần tải đã xong (còn bước ghép/chuyển đổi)
+    If $nSince < 2 Then Return -1
+    Local $nRate = $nFrac / $nSince
+    If $aP[14] > 0 And $nRate > 0 Then $nRate = 0.5 * $nRate + 0.5 * $aP[14]
+    If $nRate <= 0 Then Return -1
+    Local $iRem = Int(Ceiling((1 - $nFrac) / $nRate))
+    If $iRem > 359999 Then $iRem = 359999
+    Return $iRem
 EndFunc
 
-; Chuỗi trạng thái "Đã trôi qua: ... | Còn lại: ..." dùng cho phần tải xuống.
-Func _DL_TimeStatusText($iStartTimer, $iPct)
+; Chuỗi trạng thái "Thời gian đã trôi qua: ... | Thời gian còn lại: ..." dùng cho phần tải xuống.
+; Luôn hiện đủ cả hai nhãn; khi chưa đủ dữ liệu thì phần còn lại ghi "đang tính...".
+Func _DL_TimeStatusText($iStartTimer, ByRef $aP)
     Local $sElapsed = _DL_FormatDuration(TimerDiff($iStartTimer) / 1000)
-    Local $iRem = _DL_RemainingSecs($iStartTimer, $iPct)
+    Local $iRem = _DL_RemainingSecs($aP)
     Local $sRem = ($iRem < 0) ? _T("calculating...") : _DL_FormatDuration($iRem)
-    Return _TF("Elapsed: {1} | Remaining: {2}", $sElapsed, $sRem)
+    Return _TF("Elapsed time: {1} | Remaining time: {2}", $sElapsed, $sRem)
 EndFunc
 
 ; Chạy lệnh tải xuống (yt-dlp) với cửa sổ console ẩn.
@@ -1614,11 +1862,14 @@ Func _RunDownloadWithProgress($sCmd, $idProgress = -1, $idLabel = -1, $sWatchDir
     Local $iStart = TimerInit()
     Local $aProg = _DL_NewProgressState()
     Local $iShownPct = 0
+    Local $sLastLbl = ""
 
     If $idProgress <> -1 Then GUICtrlSetData($idProgress, 0)
     If $idLabel <> -1 Then GUICtrlSetData($idLabel, _T("Downloading..."))
+    _DLSound_Start()
 
     While ProcessExists($iPid)
+        _DLSound_Tick()
         Local $iRealPct = _DL_FeedProgress($aProg, StdoutRead($iPid))
         StderrRead($iPid) ; rút bỏ để pipe stderr không bị đầy
         If $iRealPct > $iShownPct Then ; chỉ tăng, không bao giờ lùi
@@ -1626,7 +1877,11 @@ Func _RunDownloadWithProgress($sCmd, $idProgress = -1, $idLabel = -1, $sWatchDir
             If $idProgress <> -1 Then GUICtrlSetData($idProgress, $iShownPct)
         EndIf
         If $idLabel <> -1 Then
-            GUICtrlSetData($idLabel, _T("Downloading...") & " " & _DL_TimeStatusText($iStart, $iShownPct))
+            Local $sNewLbl = _T("Downloading...") & " " & _DL_TimeStatusText($iStart, $aProg)
+            If $sNewLbl <> $sLastLbl Then ; chỉ cập nhật khi nội dung đổi để trình đọc màn hình không đọc lặp
+                GUICtrlSetData($idLabel, $sNewLbl)
+                $sLastLbl = $sNewLbl
+            EndIf
         EndIf
 
         If GUIGetMsg() = $GUI_EVENT_CLOSE Then
@@ -1639,6 +1894,7 @@ Func _RunDownloadWithProgress($sCmd, $idProgress = -1, $idLabel = -1, $sWatchDir
                 ; tiếp tục ghi vào file .mp3/... sau khi đã hủy (xem _KillProcessTree).
                 _KillProcessTree($iPid)
                 If $sWatchDir <> "" Then _DeleteNewFiles($sWatchDir, $sFilesBefore)
+                _DLSound_Stop()
                 Return False
             EndIf
             ; IDNO: tiếp tục tải, không hủy
@@ -1657,7 +1913,7 @@ EndFunc
 ; Khi người dùng bấm Hủy sẽ có hộp thoại xác nhận; nếu chọn Yes và có truyền
 ; $sWatchDir, các file tải dở (*.part, *.ytdl) trong thư mục đó sẽ bị xóa.
 ; Trả về True nếu tiến trình chạy xong, False nếu người dùng hủy (đã xác nhận).
-Func _RunTaskWithProgressDialog($sCmd, $sTitle, $sLabel, ByRef $sStdOut, ByRef $sStdErr, $hParent = 0, $sWatchDir = "")
+Func _RunTaskWithProgressDialog($sCmd, $sTitle, $sLabel, ByRef $sStdOut, ByRef $sStdErr, $hParent = 0, $sWatchDir = "", $bDownloadSound = False)
     Local $hGui
     If $hParent <> 0 And IsHWnd($hParent) Then
         $hGui = GUICreate(_T($sTitle), 380, 135, -1, -1, -1, -1, $hParent)
@@ -1686,11 +1942,14 @@ Func _RunTaskWithProgressDialog($sCmd, $sTitle, $sLabel, ByRef $sStdOut, ByRef $
     Local $iPid = Run($sCmd, @ScriptDir, @SW_HIDE, $STDOUT_CHILD + $STDERR_CHILD)
     Local $iStart = TimerInit()
     Local $bCancelled = False
+    If $bDownloadSound Then _DLSound_Start()
     Local $bRealPct = ($sWatchDir <> "") ; có $sWatchDir = tác vụ tải xuống -> dùng % thật của yt-dlp
     Local $aProg = _DL_NewProgressState()
     Local $iShownPct = 0
+    Local $sLastSt = ""
 
     While ProcessExists($iPid)
+        If $bDownloadSound Then _DLSound_Tick()
         Local $sNewOut = StdoutRead($iPid)
         $sStdOut &= $sNewOut
         $sStdErr &= StderrRead($iPid)
@@ -1706,11 +1965,16 @@ Func _RunTaskWithProgressDialog($sCmd, $sTitle, $sLabel, ByRef $sStdOut, ByRef $
             $iShownPct = $iNewPct
             GUICtrlSetData($idProgress, $iShownPct)
         EndIf
+        Local $sNewSt
         If $bRealPct Then
-            ; Tác vụ tải xuống: hiện thời gian đã trôi qua + thời gian còn lại (ước tính theo % thật)
-            GUICtrlSetData($idStatus, _DL_TimeStatusText($iStart, $iShownPct))
+            ; Tác vụ tải xuống: hiện thời gian đã trôi qua + thời gian còn lại (ước tính theo tiến độ thật)
+            $sNewSt = _DL_TimeStatusText($iStart, $aProg)
         Else
-            GUICtrlSetData($idStatus, _TF("{1}s", Int(TimerDiff($iStart) / 1000)))
+            $sNewSt = _TF("{1}s", Int(TimerDiff($iStart) / 1000))
+        EndIf
+        If $sNewSt <> $sLastSt Then
+            GUICtrlSetData($idStatus, $sNewSt)
+            $sLastSt = $sNewSt
         EndIf
 
         Local $iMsg = _GuiMsg($hGui)
@@ -1731,6 +1995,7 @@ Func _RunTaskWithProgressDialog($sCmd, $sTitle, $sLabel, ByRef $sStdOut, ByRef $
         EndIf
         Sleep(150)
     WEnd
+    If $bDownloadSound Then _DLSound_Stop()
 
     $sStdOut &= StdoutRead($iPid)
     $sStdErr &= StderrRead($iPid)
@@ -2129,6 +2394,7 @@ Func _ShowDownloader()
                     GUICtrlSetState($btn_start_dl, $GUI_ENABLE)
                     GUICtrlSetData($lbl_dl_status, "")
                     GUICtrlSetData($prog_dl, 0)
+_DLSound_Stop()
 _AppSoundPlay(@ScriptDir & "\sounds\download_finish.wav")
                     _ShowDownloadCompleteDialog($sFinalDownloadPath, _GetNewDownloadedFiles($sFinalDownloadPath, $sDLSnapshot))
                 EndIf
@@ -2460,21 +2726,21 @@ EndFunc
 
 Func _SearchEditProc($hWnd, $iMsg, $wParam, $lParam)
     Local $aRet = DllCall("user32.dll", "lresult", "CallWindowProcW", "ptr", $g_pOldSearchEditProc, "hwnd", $hWnd, "uint", $iMsg, "wparam", $wParam, "lparam", $lParam)
-    
+
     If $iMsg = 0x0100 Then ; WM_KEYDOWN
         If BitAND($lParam, 0x40000000) = 0 Then
             ; Chỉ phát nếu phím khác phím cũ HOẶC quá 50ms kể từ lần phát cuối
             If $wParam <> $g_iLastVkCode Or TimerDiff($g_iLastHookTime) > 50 Then
                 $g_iLastVkCode = $wParam
                 $g_iLastHookTime = TimerInit()
-                
+
                 If $wParam < 0x25 Or $wParam > 0x28 Then
                     _PlayTypingSound($wParam)
                 EndIf
             EndIf
         EndIf
     EndIf
-    
+
     Return $aRet[0]
 EndFunc
 
@@ -2485,7 +2751,7 @@ Func _ShowSearch()
     GUICtrlCreateLabel(_T("Enter keyword to search:"), 10, 15, 80, 20)
     GUICtrlSetColor(-1, 0xFFFFFF)
     $inp_search = GUICtrlCreateInput("", 100, 12, 210, 20)
-    
+
     ; Subclass search input for typing sounds
     Local $hEdit = GUICtrlGetHandle($inp_search)
     $g_hSearchEditCallback = DllCallbackRegister("_SearchEditProc", "lresult", "hwnd;uint;wparam;lparam")
@@ -2586,7 +2852,7 @@ Func _ShowSearch()
                     ElseIf $sResult <> "" Then
                         GUICtrlSetData($inp_search, $sResult)
                         ; ControlFocus($hCurrentSubGui, "", $inp_search)
-                        
+
                         If $g_bVoiceAutoSearch Then
                             $sCurrentKeyword = $sResult
                             $g_sSearchFilter = _TR(GUICtrlRead($cbo_filter))
@@ -3007,7 +3273,7 @@ Func _SearchYouTube($sKeyword, $bAppend)
                 If IsArray($sDateMatch) Then $sCurrentDate = $sDateMatch[0]
                 $sCurrentType = $sDefaultType
                 If IsArray($sTypeMatch) Then $sCurrentType = $sTypeMatch[0]
-                
+
                 If IsArray($sFollowerMatch) Then
                     $sCurrentFollowers = $sFollowerMatch[0]
                 Else
@@ -3034,7 +3300,7 @@ Func _SearchYouTube($sKeyword, $bAppend)
                     If $sCurrentFollowers <> "" Then $sDisplay &= " (" & $sCurrentFollowers & " followers)"
                 Else
                     If $sCurrentLive == "True" Then $sDisplay = "[LIVE] " & $sDisplay
-                    
+
                     ; --- BẮT ĐẦU PHẦN ĐỊNH DẠNG THEO YÊU CẦU ---
                     If $sCurrentDur <> "" And $sCurrentDur <> "NA" Then
                         Local $aTime = StringSplit($sCurrentDur, ":")
@@ -3046,7 +3312,7 @@ Func _SearchYouTube($sKeyword, $bAppend)
                         Else
                             $sSpokenDur = Int($sCurrentDur) & " seconds"
                         EndIf
-                        
+
                         $sSpokenDur = StringRegExpReplace($sSpokenDur, "\b1 hours\b", "1 hour")
                         $sSpokenDur = StringRegExpReplace($sSpokenDur, "\b1 minutes\b", "1 minute")
                         $sSpokenDur = StringRegExpReplace($sSpokenDur, "\b1 seconds\b", "1 second")
@@ -3855,6 +4121,7 @@ Func _DQ_RunDownloads($hParent, $sFmtTxt, $sBitrate, $iNameMode)
     If $hParent <> 0 And IsHWnd($hParent) Then GUISetState(@SW_DISABLE, $hParent)
 
     _AppSoundPlay(@ScriptDir & "\sounds\download-started.wav")
+    _DLSound_Start()
     Local $sSnapshotAll = _ListFilesRecursive($sPath)
 
     For $k = 1 To $iTotal
@@ -3880,16 +4147,21 @@ Func _DQ_RunDownloads($hParent, $sFmtTxt, $sBitrate, $iNameMode)
         Local $iPid = Run($sCmd, @ScriptDir, @SW_HIDE, $STDOUT_CHILD + $STDERR_CHILD)
         Local $iStart = TimerInit()
         Local $aProg = _DL_NewProgressState()
-        Local $iShown = 0, $sOut = "", $sErr = ""
+        Local $iShown = 0, $sOut = "", $sErr = "", $sLastSt = ""
 
         While ProcessExists($iPid)
+            _DLSound_Tick()
             Local $sNew = StdoutRead($iPid)
             $sOut &= $sNew
             $sErr &= StderrRead($iPid)
             Local $iPct = _DL_FeedProgress($aProg, $sNew)
             If $iPct > $iShown Then $iShown = $iPct ; only goes up
             GUICtrlSetData($prog, Int((($k - 1) + $iShown / 100) / $iTotal * 100))
-            GUICtrlSetData($lblStatus, _DL_TimeStatusText($iStart, $iShown))
+            Local $sNewSt = _DL_TimeStatusText($iStart, $aProg)
+            If $sNewSt <> $sLastSt Then
+                GUICtrlSetData($lblStatus, $sNewSt)
+                $sLastSt = $sNewSt
+            EndIf
 
             Local $iMsgRun = _GuiMsg($hProg)
             If $iMsgRun = $GUI_EVENT_CLOSE Or $iMsgRun = $btnCancelRun Or $iMsgRun = $hDummyEscRun Then
@@ -3924,6 +4196,7 @@ Func _DQ_RunDownloads($hParent, $sFmtTxt, $sBitrate, $iNameMode)
             $iDone += 1
         EndIf
     Next
+    _DLSound_Stop() ; finished or cancelled: the downloading sound ends here
 
     GUIDelete($hProg)
     If $hParent <> 0 And IsHWnd($hParent) Then
@@ -3932,6 +4205,7 @@ Func _DQ_RunDownloads($hParent, $sFmtTxt, $sBitrate, $iNameMode)
     EndIf
 
     If $iDone > 0 Then
+        _DLSound_Stop()
         _AppSoundPlay(@ScriptDir & "\sounds\download_finish.wav")
         _ShowDownloadCompleteDialog($sPath, _GetNewDownloadedFiles($sPath, $sSnapshotAll))
     EndIf
@@ -4177,12 +4451,12 @@ Func _PlayLoop($iCurrentIndex, $bAudioOnly = False, $bQueueOnly = False)
             ; Một giải pháp khác là dùng ffmpeg ghi ra một file tạm (buffer) hoặc dùng nut format.
             ; Ở đây, để đảm bảo hoạt động ổn định nhất, chúng ta sẽ trích xuất audio/video rồi dùng ffmpeg filter và truyền link trực tiếp nếu có thể.
             ; Nhưng vì WMP không hỗ trợ filter, chúng ta sẽ thay đổi sUrl thành một lệnh ffmpeg chạy http server mini (nếu có thể) hoặc dùng phương pháp "atempo" giả lập.
-            
+
             ; CẬP NHẬT: WMP không thể xử lý link pipe. Chúng ta sẽ dùng tính năng 'rate' của WMP nếu chỉ muốn thay đổi tốc độ.
             ; Nếu muốn thay đổi Pitch mà giữ nguyên tốc độ (Rubberband), WMP ActiveX KHÔNG hỗ trợ.
             ; HOWEVER, if the user wants to change Pitch, we can use 'asetrate' combined with 'atempo' in ffmpeg
             ; và output ra một local file hoặc stream.
-            
+
             ; Do giới hạn của WMP ActiveX, chúng ta sẽ thông báo cho người dùng và tạm thời sử dụng 'rate' của WMP
             ; hoặc thực hiện việc restart stream với tham số filter nếu dùng player khác.
             ; Đối với WMP, cách duy nhất để đổi Pitch (đi kèm đổi tốc độ) là:
@@ -4291,7 +4565,7 @@ Func _ShowDownloadDialog($sID, $sTitle, $hParentGui = 0)
         ElseIf $nMsg = $btn_DownloadNow Then
             Local $sTxt = _TR(GUICtrlRead($cboFormat))
             Local $sBitrate = GUICtrlRead($cbo_dl_bitrate_local)
-            
+
             Local $sOutTemplate = "%(title)s.%(ext)s"
             If GUICtrlRead($chk_custom_name) = $GUI_CHECKED Then
                 Local $sNameSel = _TR(GUICtrlRead($cbo_name_type))
@@ -4338,12 +4612,13 @@ Func _ShowDownloadDialog($sID, $sTitle, $hParentGui = 0)
             GUISetState(@SW_HIDE, $hDLGui)
             Local $sDLOut = "", $sDLErr = ""
             Local $sDLSnapshot2 = _ListFilesRecursive($sFinalDownloadPath)
-            Local $bDLNowDone = _RunTaskWithProgressDialog($sCmd, _T("Downloading"), _TF("Downloading ""{1}""...", $sTitle), $sDLOut, $sDLErr, $hParentGui, $sFinalDownloadPath)
+            Local $bDLNowDone = _RunTaskWithProgressDialog($sCmd, _T("Downloading"), _TF("Downloading ""{1}""...", $sTitle), $sDLOut, $sDLErr, $hParentGui, $sFinalDownloadPath, True)
             GUIDelete($hDLGui)
             If Not $bDLNowDone Then
                 If IsHWnd($hParentGui) Then WinActivate($hParentGui) ; Đảm bảo quay lại đúng giao diện gốc (vd. Playing) sau khi hủy
                 Return
             EndIf
+_DLSound_Stop()
 _AppSoundPlay(@ScriptDir & "\sounds\download_finish.wav")
             _ShowDownloadCompleteDialog($sFinalDownloadPath, _GetNewDownloadedFiles($sFinalDownloadPath, $sDLSnapshot2))
             ExitLoop
@@ -4533,7 +4808,7 @@ Func _PlayLocalAudioFile($sFile)
     Local $sTitle = (UBound($aNameMatch) > 0) ? $aNameMatch[0] : $sFile
     $sTitle = StringRegExpReplace($sTitle, "\.[A-Za-z0-9]+$", "")
 
-    _AddHistory($sFile, $sTitle, "local_audio")
+    _Recent_AddFile($sFile)
 
     ; Single file loaded directly - n/b navigation must stay OFF
     $g_bLocalPlaylistMode = False
@@ -4559,6 +4834,14 @@ EndFunc
 Func _AddAudioFolder()
     Local $sFolder = FileSelectFolder(_T("Select a folder containing audio files"), @MyDocumentsDir)
     If @error Then Return ; user cancelled the dialog
+    _OpenAudioFolder($sFolder, "")
+EndFunc
+
+; Quet thu muc va phat danh sach. $sStartFile = bai bat dau (vd bai dang nghe do lan truoc), "" = bai dau tien.
+Func _OpenAudioFolder($sFolder, $sStartFile = "")
+    While StringLen($sFolder) > 3 And StringRight($sFolder, 1) = "\"
+        $sFolder = StringTrimRight($sFolder, 1)
+    WEnd
 
     ReDim $g_aLocalPlaylist[1]
     $g_iLocalPlaylistCount = 0
@@ -4594,8 +4877,21 @@ Func _AddAudioFolder()
 
     _ArraySort($g_aLocalPlaylist)
 
+    $g_sLocalPlaylistFolder = $sFolder
+    _Recent_AddFolder($sFolder, "")
+    Local $iStartIdx = 0
+    If $sStartFile <> "" Then
+        For $i = 0 To $g_iLocalPlaylistCount - 1
+            If StringLower($g_aLocalPlaylist[$i]) = StringLower($sStartFile) Then
+                $iStartIdx = $i
+                ExitLoop
+            EndIf
+        Next
+    EndIf
+
     $g_bLocalPlaylistMode = True
-    _PlayLocalFolder(0)
+    _PlayLocalFolder($iStartIdx)
+    $g_sLocalPlaylistFolder = ""
 EndFunc
 
 ; Drives playback through a folder-loaded playlist. Pressing "n" inside the
@@ -4618,7 +4914,7 @@ Func _PlayLocalFolder($iIndex)
         Local $sTitle = (UBound($aNameMatch) > 0) ? $aNameMatch[0] : $sFile
         $sTitle = StringRegExpReplace($sTitle, "\.[A-Za-z0-9]+$", "")
 
-        _AddHistory($sFile, $sTitle, "local_audio")
+        If $g_sLocalPlaylistFolder <> "" Then _Recent_AddFolder($g_sLocalPlaylistFolder, $sFile) ; nho bai dang nghe cua thu muc
 
         Local $hLoading = 0
         If Not IsHWnd($hPlayGui) Then
@@ -4672,14 +4968,14 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         $g_sCurrentVideoTitle = $sTitle
         ; Sử dụng style tiêu chuẩn hơn để Menu Bar hiển thị tốt nhất
         $hPlayGui = GUICreate($sTitle, $iWidth, $iHeight + $iStripH, -1, -1, BitOR($WS_OVERLAPPEDWINDOW, $WS_CLIPCHILDREN), $WS_EX_TOPMOST)
-        
+
         ; Tạo loading dialog NGAY TẠI ĐÂY nếu chưa có
         If $hLoading = 0 Then
             $hLoading = GUICreate(_T("Playing"), 250, 80, -1, -1, BitOR($WS_POPUP, $WS_BORDER), BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW), $hPlayGui)
             GUICtrlCreateLabel(_T("Loading stream, please wait..."), 10, 25, 230, 30, $SS_CENTER)
             GUISetBkColor(0xFFFFFF, $hLoading)
             GUISetState(@SW_SHOW, $hLoading)
-            
+
             ; Phát âm thanh loading
             _AppPlaySoundW(@ScriptDir & "\sounds\loading.wav", 0x0009)
         EndIf
@@ -4760,7 +5056,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         EndIf
 
         ; Tạo một cửa sổ con giả để VLC có thể render nếu cần (nhưng không dùng ActiveX)
-        $oVLCCtrl = GUICtrlCreateLabel("", 0, 0, $iWidth, $iHeight) 
+        $oVLCCtrl = GUICtrlCreateLabel("", 0, 0, $iWidth, $iHeight)
         Local $hVlcContainer = GUICtrlGetHandle($oVLCCtrl)
         DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_player_set_hwnd", "ptr", $oVLC_Player, "hwnd", $hVlcContainer)
 
@@ -4847,7 +5143,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         $hDummyCtrlShiftD = GUICtrlCreateDummy() ; Ctrl+Shift+D: Description
 
         ; Re-initialize empty Dummy as a "black hole" to block Right-Click Menu / Shift+F10
-        $hDummyApps = GUICtrlCreateDummy() 
+        $hDummyApps = GUICtrlCreateDummy()
 
         ; "I" key: show information about the currently playing file
         $hDummyI = GUICtrlCreateDummy()
@@ -4868,67 +5164,16 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         ; Ctrl+Q: add this song to the play queue / Ctrl+Shift+Q: open the play queue
         $hDummyCtrlQ = GUICtrlCreateDummy()
         $hDummyCtrlShiftQ = GUICtrlCreateDummy()
+        $hDummyEq = GUICtrlCreateDummy() ; Ctrl+E: Equalizer
 
-        Local $aAccelPlay[58][2] = [ _
-            ["{SPACE}", $hDummySpace], _
-            ["n", $hDummyN], _ ; Next
-            ["b", $hDummyB], _ ; Previous (folder playlist only)
-            ["r", $hDummyR], _ ; Repeat
-            ["^r", $hDummyRemaining], _ ; Remaining time
-            ["+n", $hDummyShiftN], _ ; Force Next
-            ["+b", $hDummyShiftB], _ ; Force Back
-            ["{UP}", $hDummyUp], _
-            ["{DOWN}", $hDummyDown], _
-            ["{LEFT}", $hDummyLeft], _
-            ["{RIGHT}", $hDummyRight], _
-            ["^{LEFT}", $hDummyCtrlLeft], _
-            ["^{RIGHT}", $hDummyCtrlRight], _
-            ["^t", $hDummyCtrlT], _
-            ["^+t", $hDummyCtrlShiftT], _
-            ["{HOME}", $hDummyHome], _
-            ["{END}", $hDummyEnd], _
-            ["1", $hDummy1], _
-            ["2", $hDummy2], _
-            ["3", $hDummy3], _
-            ["4", $hDummy4], _
-            ["5", $hDummy5], _
-            ["6", $hDummy6], _
-            ["7", $hDummy7], _
-            ["8", $hDummy8], _
-            ["9", $hDummy9], _
-            ["p", $hDummyP], _
-            ["^w", $hDummyCtrlW], _
-            ["-", $hDummyMinus], _
-            ["=", $hDummyEqual], _
-            ["s", $hDummyS], _
-            ["d", $hDummyD], _
-            ["f", $hDummyF], _
-            ["^+e", $hDummyCtrlShiftE], _
-            ["{ESC}", $hDummyEsc], _
-            ["^g", $hDummyG], _
-            ["!b", $hDummyAltB], _
-            ["!g", $hDummyAltG], _
-            ["!o", $hDummyAltO], _ ; Alt+O được kích hoạt
-            ["{[}", $hDummyBracketLeft], _
-            ["{]}", $hDummyBracketRight], _
-            ["^s", $hDummyCtrlS], _
-            ["^k", $hDummyCtrlK], _
-            ["^c", $hDummyCtrlC], _
-            ["^+c", $hDummyCtrlShiftC], _
-            ["^+d", $hDummyCtrlShiftD], _
-            ["{APPSKEY}", $hDummyApps], _  ; Bắt phím Menu chuột phải và ném vào hư không
-            ["+{F10}", $hDummyApps], _     ; Bắt phím Shift+F10 và ném vào hư không
-            ["i", $hDummyI], _             ; Show file information
-            ["c", $hDummyC], _             ; Copy current track title
-            ["^{HOME}", $hDummyCtrlHome], _ ; First File (folder playlist only)
-            ["^{END}", $hDummyCtrlEnd], _   ; Last File (folder playlist only)
-            ["^!t", $hDummyCtrlAltT], _     ; Ctrl+Alt+T: Video Transcript
-            ["^!l", $hDummyCtrlAltL], _     ; Ctrl+Alt+L: View Lyrics
-            ["^q", $hDummyCtrlQ], _         ; Ctrl+Q: Add to play queue
-            ["^+q", $hDummyCtrlShiftQ], _   ; Ctrl+Shift+Q: Open the play queue
-            ["!{LEFT}", $hDummyAltLeft], _  ; Alt+Left: Rewind 1 minute
-            ["!{RIGHT}", $hDummyAltRight] _ ; Alt+Right: Forward 1 minute
+        ; Phim co dinh (1-9 = nhay den 10%-90%, phim Menu chuot phai bi chan) + phim tuy chinh (Settings > Shortcuts)
+        Local $aFixedPlay[11][2] = [ _
+            ["1", $hDummy1], ["2", $hDummy2], ["3", $hDummy3], ["4", $hDummy4], ["5", $hDummy5], _
+            ["6", $hDummy6], ["7", $hDummy7], ["8", $hDummy8], ["9", $hDummy9], _
+            ["{APPSKEY}", $hDummyApps], ["+{F10}", $hDummyApps] _
         ]
+        _HK_SetPlayerHandles()
+        Local $aAccelPlay = _HK_BuildTable("player", $aFixedPlay)
         GUISetAccelerators($aAccelPlay, $hPlayGui)
     Else
         $g_sCurrentVideoTitle = $sTitle
@@ -4958,15 +5203,16 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
     EndIf
 
     ; Give some time for stream to initialize to prevent early interruption
-    Sleep(200)    
+    Sleep(200)
     _VLC_Direct_SetVolume($g_iAppVolume)
     _VLC_Direct_SetRate($g_fPitch)
     _VLC_ApplyEqualizer() ; the audio output exists by now: make sure the equalizer preset is active
     _VLC_ApplyStereoMode() ; same for the audio channel mode; _VLC_StereoMode_Retry in the loop re-applies it if VLC dropped it
 
     ; --- Logic Tiếp tục xem (Continue Watching) ---
-    If $g_bContinueWatching Then
-        Local $iSavedTime = _GetPlaybackPosition($sID)
+    Local $bResumeOn = $bLocalFile ? $g_bResumeLocal : $g_bContinueWatching
+    If $bResumeOn Then
+        Local $iSavedTime = $bLocalFile ? _LocalPos_Get($sID) : _GetPlaybackPosition($sID)
         If $iSavedTime > 0 Then
             Local $iWaitCount = 0
             While $iWaitCount < 50
@@ -4997,17 +5243,13 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
     Local $bLoaded = False
     Local $iLoadStartTime = TimerInit()
     Local $hInfoTimer = 0 ; drives the on-screen state/position line
+    Local $hPosSaveTimer = TimerInit() ; luu vi tri nghe dang do cua file cuc bo moi 10 giay
 
     While 1
         Local $nMsg = GUIGetMsg()
 
         ; NEW FEATURE Logic kiểm tra hẹn giờ tắt nhạc (Sleep Timer) tắt và thoát toàn phần mềm
-        If $g_iSleepTimerDuration > 0 And TimerDiff($g_hSleepTimerInit) >= $g_iSleepTimerDuration Then
-            _ReportStatus(_T("Sleep timer reached. Exiting application."))
-            Sleep(1500) ; Đợi một chút để NVDA đọc thông báo
-            _Quit_App() ; phat doorclose.wav, an ngay moi cua so roi ket thuc tien trinh dut khoat
-            Exit
-        EndIf
+        _SleepTimer_Tick() ; sleep timer (with optional fade-out), shared with the Radio
 
         If $nMsg <> 0 Then
         Switch $nMsg
@@ -5183,7 +5425,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                 EndIf
 
             Case $hDummyAltO
-                ; Gửi lệnh WM_SYSCOMMAND (0x0112) và SC_KEYMENU (0xF100) trực tiếp tới Windows 
+                ; Gửi lệnh WM_SYSCOMMAND (0x0112) và SC_KEYMENU (0xF100) trực tiếp tới Windows
                 ; để mở Menu một cách chuẩn xác 100% không bị dội phím gây văng phần mềm.
                 DllCall("user32.dll", "lresult", "PostMessage", "hwnd", $hPlayGui, "uint", 0x0112, "wparam", 0xF100, "lparam", 79)
 
@@ -5528,6 +5770,9 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                 $sAction = "CLOSE"
                 ExitLoop
 
+            Case $hDummyEq
+                _ShowEqualizerDialog($hPlayGui)
+
             Case $hDummyG
                 _ShowGoToTime()
 
@@ -5550,6 +5795,14 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         ; --- Playback state checks: run on EVERY loop tick (even when idle,
         ; i.e. $nMsg = 0), so the loading dialog closes and end-of-track is
         ; detected promptly without needing a keypress first ---
+        If $bLocalFile And $g_bResumeLocal And TimerDiff($hPosSaveTimer) >= 10000 Then
+            $hPosSaveTimer = TimerInit()
+            If _VLC_Direct_GetState() = 3 And Not $g_bTrackEnded Then
+                Local $iPosNow = _VLC_Direct_GetTime()
+                If $iPosNow >= 3000 Then _LocalPos_Save($sID, $iPosNow, _VLC_Direct_GetLength())
+            EndIf
+        EndIf
+
         ; Refresh the on-screen state / position line (twice a second, redraws only when the text changed)
         If TimerDiff($hInfoTimer) >= 500 Then
             $hInfoTimer = TimerInit()
@@ -5595,7 +5848,16 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
     WEnd
 
     ; Lưu vị trí trước khi thoát (Save position before exiting)
-    If $g_bContinueWatching Then
+    If $bLocalFile Then
+        ; Audio cuc bo: nho vi tri tung file (xoa neu bai da nghe het)
+        If $g_bResumeLocal Then
+            If $g_bTrackEnded Then
+                _LocalPos_Clear($sID)
+            Else
+                _LocalPos_Save($sID, _VLC_Direct_GetTime(), _VLC_Direct_GetLength())
+            EndIf
+        EndIf
+    ElseIf $g_bContinueWatching Then
         Local $iFinalState = _VLC_Direct_GetState()
         If $iFinalState = 6 Then ; Ended
             _SavePlaybackPosition($sID, 0)
@@ -5648,25 +5910,426 @@ EndFunc
 
 ; Lines of the on-screen keyboard guide shown in the audio player window
 Func _GetPlayerHelpLines($bLocalFile, $bAllowAutoPlayToggle)
-    Local $sHelp = _T("Space: Play / Pause") & @CRLF & _T("Left / Right: Rewind / Forward") & @CRLF & _T("Alt+Left / Alt+Right: Rewind / Forward 1 minute") & @CRLF & _T("Up / Down: Volume up / down") & @CRLF & _T("Ctrl+Left / Ctrl+Right: Pan audio left / right") & @CRLF & _T("Home / End: Restart / Jump near the end") & @CRLF & _T("1 - 9: Jump to 10% - 90% of the track") & @CRLF & _T("S / D / F: Slower / Normal / Faster") & @CRLF & _T("- / =: Shorter / Longer seek step") & @CRLF & _T("P: Show percentage played") & @CRLF & _T("Ctrl+G: Go to a specific time") & @CRLF & _T("Ctrl+Alt+L: View lyrics") & @CRLF & _T("C: Copy the track title") & @CRLF
+    Local $sHelp = _HKL("Space: Play / Pause", "play_pause") & @CRLF & _HKL("Left / Right: Rewind / Forward", "seek_back|seek_fwd") & @CRLF & _HKL("Alt+Left / Alt+Right: Rewind / Forward 1 minute", "seek_back_1m|seek_fwd_1m") & @CRLF & _HKL("Up / Down: Volume up / down", "vol_up|vol_down") & @CRLF & _HKL("Ctrl+Left / Ctrl+Right: Pan audio left / right", "pan_left|pan_right") & @CRLF & _HKL("Home / End: Restart / Jump near the end", "restart|near_end") & @CRLF & _T("1 - 9: Jump to 10% - 90% of the track") & @CRLF & _HKL("S / D / F: Slower / Normal / Faster", "slower|normal_speed|faster") & @CRLF & _HKL("- / =: Shorter / Longer seek step", "step_shorter|step_longer") & @CRLF & _HKL("P: Show percentage played", "show_percent") & @CRLF & _HKL("Ctrl+G: Go to a specific time", "goto_time") & @CRLF & _HKL("Ctrl+Alt+L: View lyrics", "lyrics") & @CRLF & _HKL("C: Copy the track title", "copy_title") & @CRLF & _HKL("Ctrl+E: Open the equalizer", "eq_dialog") & @CRLF
     If $bLocalFile Then
-        $sHelp &= _T("I: Show file information") & @CRLF
+        $sHelp &= _HKL("I: Show file information", "file_info") & @CRLF
         If $g_bLocalPlaylistMode Then
-            $sHelp &= _T("N / B: Next / Previous file") & @CRLF & _T("Ctrl+Home / Ctrl+End: First / Last file") & @CRLF
+            $sHelp &= _HKL("N / B: Next / Previous file", "next|prev") & @CRLF & _HKL("Ctrl+Home / Ctrl+End: First / Last file", "first_file|last_file") & @CRLF
         EndIf
     Else
-        $sHelp &= _T("Ctrl+T: Elapsed time") & @CRLF & _T("Ctrl+Shift+T: Total duration") & @CRLF & _T("Ctrl+R: Remaining time") & @CRLF & _T("R: Turn repeat on / off") & @CRLF & _T("Ctrl+K: Copy video link") & @CRLF & _T("[ and ]: Set selection start / end") & @CRLF & _T("Ctrl+S: Save the selection") & @CRLF & _T("Alt+B: Open in browser") & @CRLF & _T("Alt+G: Go to channel") & @CRLF & _T("Ctrl+Shift+D: Video description") & @CRLF & _T("Ctrl+Shift+C: Video comments") & @CRLF & _T("Ctrl+Q: Add to play queue") & @CRLF & _T("Ctrl+Shift+Q: Open the play queue") & @CRLF & _T("Alt+O: Open the Options menu") & @CRLF
+        $sHelp &= _HKL("Ctrl+T: Elapsed time", "elapsed") & @CRLF & _HKL("Ctrl+Shift+T: Total duration", "total") & @CRLF & _HKL("Ctrl+R: Remaining time", "remaining") & @CRLF & _HKL("R: Turn repeat on / off", "repeat") & @CRLF & _HKL("Ctrl+K: Copy video link", "copy_link") & @CRLF & _HKL("[ and ]: Set selection start / end", "sel_start|sel_end") & @CRLF & _HKL("Ctrl+S: Save the selection", "save_sel") & @CRLF & _HKL("Alt+B: Open in browser", "open_browser") & @CRLF & _HKL("Alt+G: Go to channel", "goto_channel") & @CRLF & _HKL("Ctrl+Shift+D: Video description", "description") & @CRLF & _HKL("Ctrl+Shift+C: Video comments", "comments") & @CRLF & _HKL("Ctrl+Q: Add to play queue", "queue_add") & @CRLF & _HKL("Ctrl+Shift+Q: Open the play queue", "queue_open") & @CRLF & _HKL("Alt+O: Open the Options menu", "options_menu") & @CRLF
         If $bAllowAutoPlayToggle Then
-            $sHelp &= _T("N: Auto-play next on / off") & @CRLF & _T("Shift+N / Shift+B: Next / Previous video") & @CRLF
+            $sHelp &= _HKL("N: Auto-play next on / off", "next") & @CRLF & _HKL("Shift+N / Shift+B: Next / Previous video", "force_next|force_prev") & @CRLF
         EndIf
     EndIf
-    $sHelp &= _T("Esc: Close the player") & @CRLF & _T("Ctrl+W: Exit the application")
+    $sHelp &= _HKL("Esc: Close the player", "close_player") & @CRLF & _HKL("Ctrl+W: Exit the application", "exit_app")
     Return StringSplit($sHelp, @LF, 2) ; 2 = no count element, 0-based array
 EndFunc
 
 ; NEW FEATURE Hàm GUI riêng cho tính năng Sleep Timer
-Func _ShowSleepTimerDialog()
-    Local $hSleepGui = GUICreate(_T("Sleep Timer"), 300, 130, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU), $WS_EX_TOPMOST, $hPlayGui)
+; ======================================================================
+;  RADIO: FAVORITE STATIONS (radio_favorites.dat, one station per line: name|url|codec|bitrate, UTF-8)
+; ======================================================================
+; Returns [n][5] (name, url, codec, bitrate, tags) like _Radio_SearchStations, or 0 when there is no favorite
+Func _RadioFav_Load()
+    If Not FileExists($RADIO_FAV_FILE) Then Return 0
+    Local $hFile = FileOpen($RADIO_FAV_FILE, 0 + 256) ; read, UTF-8
+    If $hFile = -1 Then Return 0
+    Local $sData = FileRead($hFile)
+    FileClose($hFile)
+    Local $aLines = StringSplit(StringStripCR($sData), @LF, 2)
+    Local $aOut[UBound($aLines)][5], $n = 0
+    Local $aP
+    For $i = 0 To UBound($aLines) - 1
+        If StringStripWS($aLines[$i], 3) = "" Then ContinueLoop
+        $aP = StringSplit($aLines[$i], "|", 2)
+        If UBound($aP) < 2 Then ContinueLoop
+        If $aP[0] = "" Or $aP[1] = "" Then ContinueLoop
+        $aOut[$n][0] = $aP[0]
+        $aOut[$n][1] = StringReplace($aP[1], "%7C", "|")
+        $aOut[$n][2] = ""
+        $aOut[$n][3] = 0
+        $aOut[$n][4] = ""
+        If UBound($aP) > 2 Then $aOut[$n][2] = $aP[2]
+        If UBound($aP) > 3 Then $aOut[$n][3] = Int($aP[3])
+        $n += 1
+    Next
+    If $n = 0 Then Return 0
+    ReDim $aOut[$n][5]
+    Return $aOut
+EndFunc
+
+Func _RadioFav_Line($sName, $sUrl, $sCodec, $iBitrate)
+    Return StringReplace($sName, "|", "/") & "|" & StringReplace($sUrl, "|", "%7C") & "|" & StringReplace($sCodec, "|", "") & "|" & Int($iBitrate)
+EndFunc
+
+Func _RadioFav_Save(ByRef $aFav, $iCount)
+    Local $hFile = FileOpen($RADIO_FAV_FILE, 2 + 8 + 256) ; write (erase), create path, UTF-8
+    If $hFile = -1 Then Return False
+    For $i = 0 To $iCount - 1
+        FileWriteLine($hFile, _RadioFav_Line($aFav[$i][0], $aFav[$i][1], $aFav[$i][2], $aFav[$i][3]))
+    Next
+    FileClose($hFile)
+    Return True
+EndFunc
+
+; 1 = added, 0 = it was already a favorite, -1 = the file could not be written
+Func _RadioFav_Add($sName, $sUrl, $sCodec, $iBitrate)
+    Local $aFav = _RadioFav_Load()
+    Local $n = IsArray($aFav) ? UBound($aFav) : 0
+    For $i = 0 To $n - 1
+        If $aFav[$i][1] = $sUrl Then Return 0
+    Next
+    Local $hFile = FileOpen($RADIO_FAV_FILE, 1 + 8 + 256) ; append, create path, UTF-8
+    If $hFile = -1 Then Return -1
+    FileWriteLine($hFile, _RadioFav_Line($sName, $sUrl, $sCodec, $iBitrate))
+    FileClose($hFile)
+    Return 1
+EndFunc
+
+Func _RadioFav_RemoveAt($iIdx)
+    Local $aFav = _RadioFav_Load()
+    If Not IsArray($aFav) Then Return False
+    Local $n = UBound($aFav)
+    If $iIdx < 0 Or $iIdx >= $n Then Return False
+    If $n = 1 Then Return _RadioFav_Clear()
+    For $i = $iIdx To $n - 2
+        For $j = 0 To 4
+            $aFav[$i][$j] = $aFav[$i + 1][$j]
+        Next
+    Next
+    ReDim $aFav[$n - 1][5]
+    Return _RadioFav_Save($aFav, $n - 1)
+EndFunc
+
+Func _RadioFav_Clear()
+    Local $hFile = FileOpen($RADIO_FAV_FILE, 2 + 8 + 256)
+    If $hFile = -1 Then Return False
+    FileClose($hFile)
+    Return True
+EndFunc
+
+; ======================================================================
+;  RADIO: RECORDING. A second libvlc player (same libvlc instance as the Player) opens the station again and writes it to
+;  a file through VLC's own stream output (":sout" transcode), so it does not depend on the listening player.
+;  Formats = the audio formats of Download (M4A, MP3, OGG, WAV).
+; ======================================================================
+; Index of $v in $a (0 when not found), used to select the saved value in the Settings combo boxes
+Func _RadioRec_Idx(ByRef $a, $v)
+    For $i = 0 To UBound($a) - 1
+        If $a[$i] = $v Then Return $i
+    Next
+    Return 0
+EndFunc
+
+Func _RadioRec_Active()
+    Return ($g_pRecPlayer <> 0)
+EndFunc
+
+Func _RadioRec_SafeName($sName)
+    $sName = StringRegExpReplace($sName, '[\\/:*?"<>|\x01-\x1F]', "_")
+    $sName = StringStripWS($sName, 7)
+    If StringLen($sName) > 80 Then $sName = StringStripWS(StringLeft($sName, 80), 3)
+    $sName = StringRegExpReplace($sName, '[\. ]+$', "")
+    If $sName = "" Then $sName = "Radio"
+    Return $sName
+EndFunc
+
+; libvlc wants UTF-8 text; DllCall "str" would send the ANSI code page (breaks station names with accents)
+Func _VLC_Utf8Buf($s)
+    Local $bBin = StringToBinary($s, 4)
+    Local $tBuf = DllStructCreate("byte[" & (BinaryLen($bBin) + 1) & "]")
+    DllStructSetData($tBuf, 1, $bBin)
+    Return $tBuf
+EndFunc
+
+Func _VLC_AddOptionUtf8($pMedia, $sOpt)
+    Local $tBuf = _VLC_Utf8Buf($sOpt)
+    DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_add_option", "ptr", $pMedia, "ptr", DllStructGetPtr($tBuf))
+EndFunc
+
+Func _RadioRec_Log($sText)
+    Local $h = FileOpen($SETTINGS_DIR & "\radio_recording.log", 1 + 8 + 256)
+    If $h = -1 Then Return
+    FileWriteLine($h, @YEAR & "-" & @MON & "-" & @MDAY & " " & @HOUR & ":" & @MIN & ":" & @SEC & "  " & $sText)
+    FileClose($h)
+EndFunc
+
+; VLC stream output chain for the format / bitrate / channels / sample rate chosen in Settings > Radio.
+; $bPassthrough = True: no encoding at all, the stream is saved as it is (MPEG-TS) to be converted by ffmpeg afterwards.
+Func _RadioRec_BuildSout($sFile, $bPassthrough = False)
+    ; forward slashes + doubled % : the destination is parsed by VLC (it expands % codes like %Y)
+    Local $sPath = StringReplace(StringReplace($sFile, "\", "/"), "%", "%%")
+    If $bPassthrough Then Return '#std{access=file,mux=ts,dst="' & $sPath & '"}'
+    Local $sCodec = "mp3", $sMux = "raw"
+    Switch $g_sRadioRecFormat
+        Case "M4A"
+            $sCodec = "mp4a"
+            $sMux = "mp4"
+        Case "OGG"
+            $sCodec = "vorb"
+            $sMux = "ogg"
+        Case "WAV"
+            $sCodec = "s16l"
+            $sMux = "wav"
+    EndSwitch
+    Local $sTrans = "acodec=" & $sCodec
+    If $g_sRadioRecFormat <> "WAV" Then $sTrans &= ",ab=" & $g_iRadioRecBitrate
+    $sTrans &= ",channels=" & $g_iRadioRecChannels
+    If $g_iRadioRecRate > 0 Then $sTrans &= ",samplerate=" & $g_iRadioRecRate
+    Return '#transcode{' & $sTrans & '}:std{access=file,mux=' & $sMux & ',dst="' & $sPath & '"}'
+EndFunc
+
+; libvlc state of the recording player: 0 nothing, 1 opening, 2 buffering, 3 playing, 4 paused, 5 stopped, 6 ended, 7 error
+Func _RadioRec_State()
+    If $g_pRecPlayer = 0 Or $hVLC_Dll = -1 Then Return 0
+    Local $a = DllCall($hVLC_Dll, "int:cdecl", "libvlc_media_player_get_state", "ptr", $g_pRecPlayer)
+    If @error Or Not IsArray($a) Then Return 0
+    Return $a[0]
+EndFunc
+
+; True while the recording is running. False when it ended (stream ended / error) or the automatic stop time is reached.
+Func _RadioRec_Alive()
+    If $g_pRecPlayer = 0 Then Return False
+    If $g_iRadioRecAutoStop > 0 And TimerDiff($g_hRadioRecStart) >= $g_iRadioRecAutoStop * 60000 Then Return False
+    Local $iSt = _RadioRec_State()
+    If $iSt >= 1 And $iSt <= 4 Then Return True
+    If $iSt = 0 And TimerDiff($g_hRadioRecStart) < 5000 Then Return True ; right after play() the state is still 0 for a moment
+    _RadioRec_Log("Recording ended, VLC state " & $iSt & " (" & $g_sRadioRecStation & ")")
+    Return False
+EndFunc
+
+; Text for a recording that could not be made
+Func _RadioRec_FailText()
+    Return _T("Could not record this station.")
+EndFunc
+
+; 1 = recording started, 0 = could not start, -1 = VLC is not ready, -2 = the recording folder cannot be created
+Func _RadioRec_Start($sName, $sUrl)
+    If $g_pRecPlayer <> 0 Then Return 0
+    If $hVLC_Dll = -1 Or $oVLC_Inst = 0 Then Return -1
+    If StringStripWS($g_sRadioRecPath, 3) = "" Then $g_sRadioRecPath = @ScriptDir & "\radio_recording"
+    If Not FileExists($g_sRadioRecPath) Then DirCreate($g_sRadioRecPath)
+    If Not FileExists($g_sRadioRecPath) Then Return -2
+    Local $sBase = $g_sRadioRecPath
+    While StringRight($sBase, 1) = "\" Or StringRight($sBase, 1) = "/"
+        $sBase = StringTrimRight($sBase, 1)
+    WEnd
+    Local $sStamp = @YEAR & "-" & @MON & "-" & @MDAY & " " & @HOUR & "-" & @MIN & "-" & @SEC
+    Local $sFile = $sBase & "\" & _RadioRec_SafeName($sName) & " - " & $sStamp & "." & StringLower($g_sRadioRecFormat)
+    ; MP3, and any recording with a volume below 100, is made offline by ffmpeg from the untouched stream
+    ; (VLC's real-time MP3 encoder makes the music stutter, and VLC cannot change the volume of a recording)
+    Local $bConv = _RadioRec_NeedConvert()
+    Local $sOutFile = $sFile
+    If $bConv Then $sOutFile = StringTrimRight($sFile, 4) & ".ts"
+    Local $sSout = _RadioRec_BuildSout($sOutFile, $bConv)
+
+    Local $tUrl = _VLC_Utf8Buf(StringStripWS($sUrl, 3))
+    Local $aM = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_media_new_location", "ptr", $oVLC_Inst, "ptr", DllStructGetPtr($tUrl))
+    If @error Or Not IsArray($aM) Or Not $aM[0] Then Return 0
+    Local $pMedia = $aM[0]
+    _VLC_AddOptionUtf8($pMedia, ":no-video")
+    ; Real-time transcoding of a network stream stutters when the buffers are small: use big ones for the recording only
+    _VLC_AddOptionUtf8($pMedia, ":network-caching=5000")
+    _VLC_AddOptionUtf8($pMedia, ":live-caching=5000")
+    _VLC_AddOptionUtf8($pMedia, ":sout-mux-caching=3000")
+    _VLC_AddOptionUtf8($pMedia, ":sout=" & $sSout)
+    Local $aP = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_media_player_new_from_media", "ptr", $pMedia)
+    DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_release", "ptr", $pMedia)
+    If @error Or Not IsArray($aP) Or Not $aP[0] Then Return 0
+    Local $aPlay = DllCall($hVLC_Dll, "int:cdecl", "libvlc_media_player_play", "ptr", $aP[0])
+    If @error Or Not IsArray($aPlay) Or $aPlay[0] <> 0 Then
+        DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_player_release", "ptr", $aP[0])
+        _RadioRec_Log("play() failed for " & $sName & " | " & $sSout)
+        Return 0
+    EndIf
+    $g_pRecPlayer = $aP[0]
+    $g_sRadioRecFile = $sFile
+    $g_bRecPassthrough = $bConv
+    $g_sRecTsFile = ""
+    If $bConv Then $g_sRecTsFile = $sOutFile
+    $g_sRadioRecStation = $sName
+    $g_hRadioRecStart = TimerInit()
+    _RadioRec_Log("Recording started: " & $sName & " | " & $sUrl & " | " & $sSout)
+    Return 1
+EndFunc
+
+; Stops the recording (VLC closes the file properly). Returns the path of the saved file, "" when nothing usable was
+; recorded (an empty file is deleted), or "@CONVERTING" when the MP3 is being made from the saved stream in the
+; background (_RadioRec_ConvPoll announces the result). Safe to call when nothing is recording.
+Func _RadioRec_Stop()
+    If $g_pRecPlayer = 0 Then Return ""
+    Local $sFile = $g_sRadioRecFile, $sTs = $g_sRecTsFile, $bConv = $g_bRecPassthrough
+    If $hVLC_Dll <> -1 Then
+        DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_player_stop", "ptr", $g_pRecPlayer)
+        DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_player_release", "ptr", $g_pRecPlayer)
+    EndIf
+    $g_pRecPlayer = 0
+    $g_sRadioRecFile = ""
+    $g_sRecTsFile = ""
+    $g_bRecPassthrough = False
+    If $bConv Then
+        If FileExists($sTs) And FileGetSize($sTs) > 4096 Then
+            If _RadioRec_ConvStart($sTs, $sFile, $g_sRadioRecStation) Then Return "@CONVERTING"
+            _RadioRec_Log("Could not start ffmpeg to convert " & $sTs)
+            Return $sTs ; the saved stream is still playable
+        EndIf
+        _RadioRec_Log("Nothing usable was recorded: " & $sTs)
+        If FileExists($sTs) Then FileDelete($sTs)
+        Return ""
+    EndIf
+    If FileExists($sFile) And FileGetSize($sFile) > 4096 Then Return $sFile
+    _RadioRec_Log("Nothing usable was recorded: " & $sFile)
+    If FileExists($sFile) Then FileDelete($sFile)
+    Return ""
+EndFunc
+
+; True when the recording is made offline: MP3, or a recording volume below 100 (needs ffmpeg.exe)
+Func _RadioRec_NeedConvert()
+    If Not FileExists($FFMPEG_PATH) Then Return False
+    Return ($g_sRadioRecFormat = "MP3" Or $g_iRadioRecVolume < 100)
+EndFunc
+
+; ffmpeg turns the saved stream into the chosen format and applies the recording volume (local file to local file:
+; no network, no real-time constraints)
+Func _RadioRec_ConvStart($sTs, $sFinal, $sTitle)
+    Local $sCmd = '"' & $FFMPEG_PATH & '" -hide_banner -loglevel error -y -i "' & $sTs & '" -vn'
+    Switch $g_sRadioRecFormat
+        Case "M4A"
+            $sCmd &= ' -c:a aac -b:a ' & $g_iRadioRecBitrate & 'k'
+        Case "OGG"
+            $sCmd &= ' -c:a libvorbis -b:a ' & $g_iRadioRecBitrate & 'k'
+        Case "WAV"
+            $sCmd &= ' -c:a pcm_s16le'
+        Case Else
+            $sCmd &= ' -c:a libmp3lame -b:a ' & $g_iRadioRecBitrate & 'k'
+    EndSwitch
+    $sCmd &= ' -ac ' & $g_iRadioRecChannels
+    If $g_iRadioRecRate > 0 Then $sCmd &= ' -ar ' & $g_iRadioRecRate
+    ; Same loudness as the radio slider: the radio sends 100*(v/100)^(1/3) to VLC and VLC applies the CUBE of that
+    ; (its volume is cubic), so the radio volume is a plain linear gain v/100. The recording uses that same gain.
+    If $g_iRadioRecVolume < 100 Then $sCmd &= ' -af volume=' & StringFormat("%.4f", $g_iRadioRecVolume / 100)
+    $sCmd &= ' -metadata title="' & StringReplace($sTitle, '"', "'") & '" "' & $sFinal & '"'
+    Local $iPid = Run($sCmd, @ScriptDir, @SW_HIDE, $STDERR_CHILD + $STDOUT_CHILD)
+    If $iPid = 0 Then Return False
+    If $g_iRecConvN >= UBound($g_aRecConv) Then ReDim $g_aRecConv[$g_iRecConvN + 1][4]
+    $g_aRecConv[$g_iRecConvN][0] = $iPid
+    $g_aRecConv[$g_iRecConvN][1] = $sTs
+    $g_aRecConv[$g_iRecConvN][2] = $sFinal
+    $g_aRecConv[$g_iRecConvN][3] = ""
+    $g_iRecConvN += 1
+    _RadioRec_Log("Converting to MP3: " & $sCmd)
+    Return True
+EndFunc
+
+; Looks at the running conversions; each one that has finished is announced. $lblRec = label to update (or -1)
+Func _RadioRec_ConvPoll($lblRec = -1)
+    Local $i = 0, $iPid, $sTs, $sFinal, $sErr, $sMsg
+    While $i < $g_iRecConvN
+        $iPid = $g_aRecConv[$i][0]
+        $g_aRecConv[$i][3] &= StderrRead($iPid) & StdoutRead($iPid)
+        If ProcessExists($iPid) Then
+            $i += 1
+            ContinueLoop
+        EndIf
+        $g_aRecConv[$i][3] &= StderrRead($iPid)
+        StdioClose($iPid)
+        $sTs = $g_aRecConv[$i][1]
+        $sFinal = $g_aRecConv[$i][2]
+        $sErr = $g_aRecConv[$i][3]
+        ; remove this entry from the list
+        For $k = $i To $g_iRecConvN - 2
+            For $m = 0 To 3
+                $g_aRecConv[$k][$m] = $g_aRecConv[$k + 1][$m]
+            Next
+        Next
+        $g_iRecConvN -= 1
+        If FileExists($sFinal) And FileGetSize($sFinal) > 4096 Then
+            If FileExists($sTs) Then FileDelete($sTs)
+            If $lblRec <> -1 Then GUICtrlSetData($lblRec, _TF("Recording saved: {1}", $sFinal))
+            _NVDA_Speak(_TF("Recording saved: {1}", _Radio_FileName($sFinal)))
+        Else
+            _RadioRec_Log("MP3 conversion failed for " & $sTs & ": " & $sErr)
+            If FileExists($sFinal) Then FileDelete($sFinal)
+            $sMsg = _TF("The conversion failed. The recording was kept as: {1}", _Radio_FileName($sTs))
+            If $lblRec <> -1 Then GUICtrlSetData($lblRec, $sMsg)
+            _NVDA_Speak($sMsg)
+        EndIf
+    WEnd
+EndFunc
+
+; Used when the app closes: give running conversions some time to finish (anything left is kept as .ts)
+Func _RadioRec_ConvWait($iMaxMs)
+    Local $hWait = TimerInit()
+    While $g_iRecConvN > 0 And TimerDiff($hWait) < $iMaxMs
+        _RadioRec_ConvPoll()
+        Sleep(200)
+    WEnd
+EndFunc
+
+; A .ts left in the recording folder is only a temporary file when the finished recording exists: delete those
+Func _RadioRec_CleanupTemp()
+    Local $hFind = FileFindFirstFile($g_sRadioRecPath & "\*.ts")
+    If $hFind = -1 Then Return
+    Local $sName, $sDone
+    Local $aExt[4] = [".mp3", ".m4a", ".ogg", ".wav"]
+    While 1
+        $sName = FileFindNextFile($hFind)
+        If @error Then ExitLoop
+        For $sExt In $aExt
+            $sDone = $g_sRadioRecPath & "\" & StringTrimRight($sName, 3) & $sExt
+            If FileExists($sDone) And FileGetSize($sDone) > 4096 Then
+                FileDelete($g_sRadioRecPath & "\" & $sName)
+                ExitLoop
+            EndIf
+        Next
+    WEnd
+    FileClose($hFind)
+EndFunc
+
+; ======================================================================
+;  SLEEP TIMER (shared by the Player and the Radio): closes the app, optionally fading the volume out first
+; ======================================================================
+; Volume straight to libvlc (0-100 = libvlc scale, not the UI scale)
+Func _VLC_Direct_SetVolumeRaw($iVLCVol)
+    If Not $oVLC_Player Then Return
+    DllCall($hVLC_Dll, "int:cdecl", "libvlc_audio_set_volume", "ptr", $oVLC_Player, "int", $iVLCVol)
+EndFunc
+
+; Put the volume back to the normal level after a fade-out was started (timer changed or cancelled)
+Func _SleepTimer_EndFade()
+    $g_bSleepFading = False
+    _VLC_Direct_SetVolume($g_iAppVolume)
+EndFunc
+
+; Call often from the loop of the Player and of the Radio window
+Func _SleepTimer_Tick()
+    If $g_iSleepTimerDuration <= 0 Then
+        If $g_bSleepFading Then _SleepTimer_EndFade()
+        Return
+    EndIf
+    Local $fElapsed = TimerDiff($g_hSleepTimerInit)
+    If $fElapsed >= $g_iSleepTimerDuration Then
+        _ReportStatus(_T("Sleep timer reached. Exiting application."))
+        Sleep(1500) ; give the screen reader time to read the message
+        _Quit_App() ; plays doorclose.wav, hides every window and ends the process
+        Exit
+    EndIf
+    If Not $g_bSleepFade Then Return
+    Local $iFadeMs = $g_iSleepFadeSecs * 1000
+    If $iFadeMs > $g_iSleepTimerDuration Then $iFadeMs = $g_iSleepTimerDuration
+    Local $fRemain = $g_iSleepTimerDuration - $fElapsed
+    If $fRemain > $iFadeMs Then Return
+    If TimerDiff($g_hSleepFadeTimer) < 200 Then Return
+    $g_hSleepFadeTimer = TimerInit()
+    $g_bSleepFading = True
+    ; fade straight down from the current libvlc volume to 0 (linear in the libvlc scale sounds even to the ear)
+    _VLC_Direct_SetVolumeRaw(Round(_VolumeUIToVLC($g_iAppVolume) * $fRemain / $iFadeMs))
+EndFunc
+
+Func _ShowSleepTimerDialog($hParent = 0)
+    If $hParent = 0 Then $hParent = $hPlayGui
+    Local $hSleepGui = GUICreate(_T("Sleep Timer"), 300, 215, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU), $WS_EX_TOPMOST, $hParent)
     GUISetBkColor($COLOR_BLUE)
 
     GUICtrlCreateLabel(_T("Enter time to exit the app (0 min & 0 sec to disable):"), 10, 15, 280, 20)
@@ -5680,9 +6343,17 @@ Func _ShowSleepTimerDialog()
     GUICtrlSetColor(-1, 0xFFFFFF)
     Local $inpSec = GUICtrlCreateInput("0", 220, 42, 60, 20, $ES_NUMBER)
 
-    Local $btnSet = GUICtrlCreateButton(_T("Set Timer"), 20, 80, 120, 30)
+    Local $chkFade = GUICtrlCreateCheckbox(_T("Fade out the volume before closing"), 20, 82, 270, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    If $g_bSleepFade Then GUICtrlSetState(-1, $GUI_CHECKED)
+    GUICtrlCreateLabel(_T("Fade duration (seconds):"), 40, 114, 150, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $inpFade = GUICtrlCreateInput(String($g_iSleepFadeSecs), 195, 111, 60, 20, $ES_NUMBER)
+    If Not $g_bSleepFade Then GUICtrlSetState($inpFade, $GUI_DISABLE)
+
+    Local $btnSet = GUICtrlCreateButton(_T("Set Timer"), 20, 155, 120, 30)
     GUICtrlSetState(-1, $GUI_DEFBUTTON)
-    Local $btnCancel = GUICtrlCreateButton(_T("Cancel"), 160, 80, 120, 30)
+    Local $btnCancel = GUICtrlCreateButton(_T("Cancel"), 160, 155, 120, 30)
 
     Local $hDummyEsc = GUICtrlCreateDummy()
     Local $aAccel[1][2] = [["{ESC}", $hDummyEsc]]
@@ -5692,19 +6363,35 @@ Func _ShowSleepTimerDialog()
     _AllowUIPI($hSleepGui)
     _AllowUIPI($inpMin)
     _AllowUIPI($inpSec)
+    _AllowUIPI($inpFade)
     ControlFocus($hSleepGui, "", $inpMin)
-    GUICtrlSendMsg($inpMin, 0x00B1, 0, -1) ; Bôi đen text bên trong
+    GUICtrlSendMsg($inpMin, 0x00B1, 0, -1) ; select the text inside
 
+    Local $nMsg, $iMins, $iSecs, $iTotalSecs, $iFadeSecs
     While 1
-        Local $nMsg = GUIGetMsg()
+        $nMsg = _GuiMsg($hSleepGui)
         Switch $nMsg
             Case $GUI_EVENT_CLOSE, $btnCancel, $hDummyEsc
                 GUIDelete($hSleepGui)
                 Return
+            Case $chkFade
+                If GUICtrlRead($chkFade) = $GUI_CHECKED Then
+                    GUICtrlSetState($inpFade, $GUI_ENABLE)
+                Else
+                    GUICtrlSetState($inpFade, $GUI_DISABLE)
+                EndIf
             Case $btnSet
-                Local $iMins = Int(GUICtrlRead($inpMin))
-                Local $iSecs = Int(GUICtrlRead($inpSec))
-                Local $iTotalSecs = ($iMins * 60) + $iSecs
+                $iMins = Int(GUICtrlRead($inpMin))
+                $iSecs = Int(GUICtrlRead($inpSec))
+                $iTotalSecs = ($iMins * 60) + $iSecs
+                $g_bSleepFade = (GUICtrlRead($chkFade) = $GUI_CHECKED)
+                $iFadeSecs = Int(GUICtrlRead($inpFade))
+                If $iFadeSecs < 1 Then $iFadeSecs = 1
+                If $iFadeSecs > 600 Then $iFadeSecs = 600
+                $g_iSleepFadeSecs = $iFadeSecs
+                IniWrite($CONFIG_FILE, "Settings", "SleepFade", $g_bSleepFade ? "true" : "false")
+                IniWrite($CONFIG_FILE, "Settings", "SleepFadeSecs", String($g_iSleepFadeSecs))
+                If $g_bSleepFading Then _SleepTimer_EndFade() ; a fade that was already running starts over with the new timer
                 If $iTotalSecs > 0 Then
                     $g_iSleepTimerDuration = $iTotalSecs * 1000
                     $g_hSleepTimerInit = TimerInit()
@@ -5717,6 +6404,97 @@ Func _ShowSleepTimerDialog()
                 Return
         EndSwitch
     WEnd
+EndFunc
+
+; ======================================================================
+;  RADIO WINDOW HELPERS
+; ======================================================================
+; Add one accelerator row (controls that do not exist in the current mode have the id -9999 and are skipped)
+Func _Radio_AccAdd(ByRef $aAcc, ByRef $n, $sKey, $id)
+    If $id = -9999 Then Return
+    If $n >= UBound($aAcc) Then ReDim $aAcc[$n + 8][2]
+    $aAcc[$n][0] = $sKey
+    $aAcc[$n][1] = $id
+    $n += 1
+EndFunc
+
+; Install the accelerator table. Page Up / Page Down (previous / next station) are only added while a station is
+; playing, so the list keeps its normal paging keys when nothing is playing.
+Func _Radio_ApplyAccel($hGui, ByRef $aAcc, $nAcc, $bPaging, $idPgUp, $idPgDn)
+    Local $aOut[$nAcc + 2][2], $n = 0
+    For $i = 0 To $nAcc - 1
+        $aOut[$n][0] = $aAcc[$i][0]
+        $aOut[$n][1] = $aAcc[$i][1]
+        $n += 1
+    Next
+    If $bPaging Then
+        $aOut[$n][0] = "{PGUP}"
+        $aOut[$n][1] = $idPgUp
+        $n += 1
+        $aOut[$n][0] = "{PGDN}"
+        $aOut[$n][1] = $idPgDn
+        $n += 1
+    EndIf
+    ReDim $aOut[$n][2]
+    GUISetAccelerators($aOut, $hGui)
+EndFunc
+
+Func _Radio_IdAdd(ByRef $a, $id)
+    If $id = -9999 Then Return
+    ReDim $a[UBound($a) + 1]
+    $a[UBound($a) - 1] = $id
+EndFunc
+
+Func _Radio_FillStations($idList, ByRef $aSt, $iCount)
+    GUICtrlSetData($idList, "")
+    If $iCount <= 0 Then Return
+    Local $sBatch = ""
+    For $i = 0 To $iCount - 1
+        $sBatch &= ($i + 1) & ". " & _Radio_StationLabel($aSt, $i) & "|"
+    Next
+    GUICtrlSetData($idList, StringTrimRight($sBatch, 1))
+EndFunc
+
+; Favorites window: read the file again into $aSt, refill the list and keep the selection near $iKeep
+Func _Radio_ReloadFav($idList, ByRef $aSt, ByRef $iCount, $iKeep)
+    $aSt = _RadioFav_Load()
+    $iCount = IsArray($aSt) ? UBound($aSt) : 0
+    _Radio_FillStations($idList, $aSt, $iCount)
+    If $iCount > 0 Then
+        If $iKeep >= $iCount Then $iKeep = $iCount - 1
+        If $iKeep < 0 Then $iKeep = 0
+        _GUICtrlListBox_SetCurSel($idList, $iKeep)
+    EndIf
+EndFunc
+
+Func _Radio_FileName($sPath)
+    Return StringRegExpReplace($sPath, "^.*[\\/]", "")
+EndFunc
+
+; Record button text and the red recording line
+Func _Radio_RecUpdateUI($btnRec, $lblRec)
+    If _RadioRec_Active() Then
+        GUICtrlSetData($btnRec, _T("Stop recording (Ctrl+R)"))
+        GUICtrlSetData($lblRec, _TF("Recording: {1}", $g_sRadioRecStation))
+    Else
+        GUICtrlSetData($btnRec, _T("Record (Ctrl+R)"))
+    EndIf
+EndFunc
+
+; Radio Player > Favorite Stations (main menu): same window as the station list, filled with the favorites
+Func _ShowRadioFavorites()
+    If Not _VLC_Direct_Init() Then
+        MsgBox(16, _T("Error"), _T("Could not initialize libvlc.dll. Please ensure VLC DLLs are present in the lib folder."))
+        Return
+    EndIf
+    If Not IsArray(_RadioFav_Load()) Then
+        MsgBox(64, _T("Favorite Stations"), _T("You have no favorite stations yet. Open the Radio Player, select a station and press Ctrl+D to add it."))
+        Return
+    EndIf
+    _Radio_StationsWindow("", "", _T("Favorite Stations"), True)
+    _RadioRec_Stop()
+    _VLC_Direct_Stop()
+    _Pan_Reset()
 EndFunc
 
 Func _SaveSelection($sUrl, $sTitle)
@@ -5937,6 +6715,40 @@ Func _AppSoundPlay($sFile, $iWait = 0)
     Return SoundPlay($sFile, $iWait)
 EndFunc
 
+; ---- Download sound: sounds\downloading.wav loops from the moment a download starts (after download-started.wav
+; has finished) until _DLSound_Stop is called, right before download_finish.wav plays or when the download is cancelled.
+; If the file does not exist nothing is played. _DLSound_Start is safe to call again (batches of downloads).
+Func _DLSound_Start()
+    If $g_bDLSoundWanted Then Return
+    $g_bDLSoundWanted = True
+    $g_bDLSoundOn = False
+    $g_iDLSoundDelay = 0
+    Local $sStarted = @ScriptDir & "\sounds\download-started.wav"
+    If Not $g_bMuteAppSounds And FileExists($sStarted) Then $g_iDLSoundDelay = _WavDurationMs($sStarted) + 100
+    $g_hDLSoundAt = TimerInit()
+    _DLSound_Tick()
+EndFunc
+
+; Call from the loops that wait for a download (cheap): starts the loop once the start sound is over
+Func _DLSound_Tick()
+    If Not $g_bDLSoundWanted Or $g_bDLSoundOn Then Return
+    If TimerDiff($g_hDLSoundAt) < $g_iDLSoundDelay Then Return
+    $g_bDLSoundOn = True
+    If $g_bMuteAppSounds Then Return
+    Local $sFile = @ScriptDir & "\sounds\downloading.wav"
+    If Not FileExists($sFile) Then Return
+    $g_bDLSoundReal = True
+    DllCall("winmm.dll", "bool", "PlaySoundW", "wstr", $sFile, "ptr", 0, "dword", 0x00020009) ; SND_FILENAME | SND_LOOP | SND_ASYNC
+EndFunc
+
+Func _DLSound_Stop()
+    $g_bDLSoundWanted = False
+    $g_bDLSoundOn = False
+    If Not $g_bDLSoundReal Then Return
+    $g_bDLSoundReal = False
+    DllCall("winmm.dll", "int", "PlaySoundW", "ptr", 0, "ptr", 0, "dword", 0) ; stop
+EndFunc
+
 ; Loi chao theo gio trong ngay (dung cho hop thoai chao mung luc mo cua va man hinh chinh)
 Func _GetGreeting()
     If @HOUR < 12 Then Return _T("Good morning")
@@ -6025,6 +6837,8 @@ Func _Quit_App()
     If $oVLC_Player <> 0 And $hVLC_Dll <> -1 Then _
         DllCall($hVLC_Dll, "int:cdecl", "libvlc_audio_set_volume", "ptr", $oVLC_Player, "int", 0)
 
+    _RadioRec_Stop() ; let VLC finish a radio recording properly (closes the file) before the app ends
+    _RadioRec_ConvWait(30000) ; and let ffmpeg finish an MP3 that is being made
     ProcessClose("comments.exe")
     ProcessClose("description.exe")
     ProcessClose("voice_search.exe")
@@ -6120,7 +6934,7 @@ EndFunc
 
 Func _PlayTypingSound($vkCode)
     If Not $g_bTypingSoundEnabled Then Return
-    
+
     ; Phân loại phím để tránh phát âm thanh cho phím chức năng không mong muốn
     Local $bAllowed = False
     If ($vkCode >= 48 And $vkCode <= 57) Or _ ; Digits 0-9
@@ -6132,7 +6946,7 @@ Func _PlayTypingSound($vkCode)
        ($vkCode = 0x08) Or ($vkCode = 0x20) Or ($vkCode = 0x2E) Then ; Backspace, Space, Delete
         $bAllowed = True
     EndIf
-    
+
     If Not $bAllowed Then Return
 
     Local $sFile = ""
@@ -6787,6 +7601,7 @@ Func _LoadHistory()
             Local $sID = $aParts[1]
             Local $sTitle = $aParts[2]
             Local $sType = ($aParts[0] >= 3) ? $aParts[3] : "video" ; Read type, default to video
+            If $sType = "local_audio" Then ContinueLoop ; nhac nghe tu may nam trong Recent Files/Folders, khong con trong Watch History
 
             $iTotalLoaded += 1
             Local $sDisplayTitle = $iTotalLoaded & ". " & $sTitle
@@ -6939,7 +7754,7 @@ Func _Check_YTDLP_Update($bSilent = False)
                 $downloadGui = GuiCreate(_T("downloading update..."), 400, 100, -1, -1)
                 GuiSetBkColor($COLOR_WHITE)
                 GuiCtrlCreateLabel($downloadtext, 40, 40)
-                
+
                 Local $hDummySpaceUpdate = GUICtrlCreateDummy()
                 Local $hDummyHUpdate = GUICtrlCreateDummy()
                 Local $hDummyPgUpUpdate = GUICtrlCreateDummy()
@@ -6988,7 +7803,7 @@ Func _Check_YTDLP_Update($bSilent = False)
                         Case $msg = $hDummy3Update
                             _ReportStatus(_TF("Total remaining: {1}", _FormatBytes($g_iUpdateFileSize - $g_iUpdateBytesRead)))
                     EndSelect
-                    
+
                     Sleep(10)
                     ; Tự động phát lại nhạc nếu kết thúc (Lặp lại)
                     If _VLC_Direct_GetState() = 6 Then ; 6 = Ended
@@ -7284,7 +8099,7 @@ Func _CheckGithubUpdate($bSilent = False)
 
         If $sLatestVersion <> $sLocalAppVersion Then
             _AppSoundPlay("sounds/update.wav")
-            
+
             ; Extract changelog from body
             Local $aBodyMatch = StringRegExp($sResponse, '"body":\s*"([^"\\]*(?:\\.[^"\\]*)*)"', 3)
             Local $sChangelog = ""
@@ -7309,7 +8124,7 @@ Func _CheckGithubUpdate($bSilent = False)
             GUICtrlSetColor(-1, 0xFFFFFF)
 
             Local $editChangelog = GUICtrlCreateEdit($sChangelog, 10, 95, 380, 240, BitOR($ES_AUTOVSCROLL, $ES_READONLY, $WS_VSCROLL, $WS_TABSTOP))
-            
+
             GUICtrlCreateLabel(_T("Do you want to download and install this update now?"), 10, 345, 380, 20)
             GUICtrlSetColor(-1, 0xFFFFFF)
             GUICtrlSetFont(-1, 9, 600)
@@ -7318,7 +8133,7 @@ Func _CheckGithubUpdate($bSilent = False)
             Local $btnNo = GUICtrlCreateButton(_T("&No, Later"), 210, 370, 130, 35)
 
             GUISetState(@SW_SHOW, $hUpdateGUI)
-            
+
             Local $iUpdateAction = 0 ; 0=None, 1=Yes, 2=No
             While 1
                 Local $uMsg = GUIGetMsg()
@@ -7479,7 +8294,7 @@ Func _UnescapeJSON($sString)
     $sString = StringReplace($sString, '\n', @LF)
     $sString = StringReplace($sString, '\r', @CR)
     $sString = StringReplace($sString, '\t', @TAB)
-    
+
     ; Handle \uXXXX
     Local $aMatch = StringRegExp($sString, "(?i)\\u([0-9a-f]{4})", 3)
     If IsArray($aMatch) Then
@@ -7487,7 +8302,7 @@ Func _UnescapeJSON($sString)
             $sString = StringReplace($sString, "\u" & $aMatch[$i], ChrW(Dec($aMatch[$i])))
         Next
     EndIf
-    
+
     Return $sString
 EndFunc
 
@@ -7543,10 +8358,13 @@ Func _ShowSettings()
     $g_hSettingsDummyNext = GUICtrlCreateDummy()
     $g_hSettingsDummyPrev = GUICtrlCreateDummy()
     ; Accelerators are often blocked by child controls, so we also use HotKeySet below.
-    Local $aAccelSettings[2][2] = [["^{TAB}", $g_hSettingsDummyNext], ["^+{TAB}", $g_hSettingsDummyPrev]]
+    Local $hDummyEnterSet = GUICtrlCreateDummy()
+    Local $aAccelSettings[3][2] = [["^{TAB}", $g_hSettingsDummyNext], ["^+{TAB}", $g_hSettingsDummyPrev], ["{ENTER}", $hDummyEnterSet]]
+    Local $bEnterAccSet = True
     GUISetAccelerators($aAccelSettings, $g_hSettingsGui)
 
-    Local $aTabItems[5]
+    Local $aTabItems[7]
+    _HK_WorkInit()
     ; --- Tab General ---
     $aTabItems[0] = GUICtrlCreateTabItem(_T("General"))
     GUICtrlCreateLabel(_T("General Settings"), 20, 50, 410, 20)
@@ -7588,6 +8406,14 @@ Func _ShowSettings()
 
     Local $chk_ShowLogo = GUICtrlCreateCheckbox(_T("Show logo when the application starts"), 30, 260, 380, 20)
     If $g_bShowLogo Then GUICtrlSetState(-1, $GUI_CHECKED)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+
+    Local $chk_ResumeLocal = GUICtrlCreateCheckbox(_T("Remember where I stopped in each audio file (Resume)"), 30, 290, 380, 20)
+    If $g_bResumeLocal Then GUICtrlSetState(-1, $GUI_CHECKED)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+
+    Local $chk_ShowLicenseConfirm = GUICtrlCreateCheckbox(_T("Show license confirmation when the application starts"), 30, 320, 380, 20)
+    If $g_bShowLicenseConfirm Then GUICtrlSetState(-1, $GUI_CHECKED)
     GUICtrlSetColor(-1, 0xFFFFFF)
 
     ; --- Tab Player ---
@@ -7682,8 +8508,8 @@ Func _ShowSettings()
     GUICtrlSetColor(-1, 0xFFFFFF)
     Local $cbo_Equalizer = GUICtrlCreateCombo("", 140, 395, 270, 20, $CBS_DROPDOWNLIST)
     GUICtrlSetTip(-1, _T("Select an equalizer preset. Choose Off to turn the equalizer off."))
-    GUICtrlSetData(-1, _TL("Off|" & _EQ_PresetNames()))
-    _GUICtrlComboBox_SetCurSel($cbo_Equalizer, $g_iEqPreset + 1) ; item 0 = Off, item n = preset n-1
+    GUICtrlSetData(-1, _TL("Off|" & _EQ_PresetNames() & "|Custom"))
+    _GUICtrlComboBox_SetCurSel($cbo_Equalizer, ($g_iEqPreset = -2) ? 19 : $g_iEqPreset + 1) ; item 0 = Off, item n = preset n-1, last item (19) = Custom
 
     Local $chk_NormalizeVolume = GUICtrlCreateCheckbox(_T("Normalize volume (keeps the loudness even between tracks)"), 30, 425, 380, 20)
     If $g_bNormalizeVolume Then GUICtrlSetState(-1, $GUI_CHECKED)
@@ -7726,8 +8552,61 @@ Func _ShowSettings()
     Local $btn_ChangePath = GUICtrlCreateButton(_T("Change Path"), 30, 175, 180, 30)
     Local $btn_ResetPath = GUICtrlCreateButton(_T("Reset to Default Directory"), 220, 175, 190, 30)
 
+    ; --- Tab Radio ---
+    $aTabItems[3] = GUICtrlCreateTabItem(_T("Radio"))
+    GUICtrlCreateLabel(_T("Radio Settings"), 20, 50, 410, 20)
+    GUICtrlSetFont(-1, 10, 800)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+
+    Local $sTempRecPath = $g_sRadioRecPath
+    GUICtrlCreateLabel(_T("Recording Folder:"), 30, 80, 380, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $inp_RecPath = GUICtrlCreateEdit($sTempRecPath, 30, 105, 380, 50, BitOR($ES_READONLY, $WS_TABSTOP))
+    _AllowUIPI($inp_RecPath)
+    Local $btn_RecChange = GUICtrlCreateButton(_T("Change Path"), 30, 163, 180, 28)
+    Local $btn_RecReset = GUICtrlCreateButton(_T("Reset to Default Directory"), 220, 163, 190, 28)
+    Local $btn_RecOpen = GUICtrlCreateButton(_T("Open Recording Folder"), 30, 197, 380, 28)
+
+    GUICtrlCreateLabel(_T("Recording format:"), 30, 242, 140, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $cbo_RecFormat = GUICtrlCreateCombo("", 180, 237, 230, 20, $CBS_DROPDOWNLIST)
+    GUICtrlSetData(-1, _TL("M4A (Audio)|MP3 (Audio)|OGG (Audio)|WAV (Audio)"))
+    _GUICtrlComboBox_SetCurSel($cbo_RecFormat, _RadioRec_Idx($g_aRadioRecFormats, $g_sRadioRecFormat))
+
+    GUICtrlCreateLabel(_T("Recording bitrate:"), 30, 277, 140, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $cbo_RecBitrate = GUICtrlCreateCombo("", 180, 272, 230, 20, $CBS_DROPDOWNLIST)
+    GUICtrlSetData(-1, _TL("128 kbps|192 kbps|256 kbps|320 kbps"))
+    _GUICtrlComboBox_SetCurSel($cbo_RecBitrate, _RadioRec_Idx($g_aRadioRecBitrates, $g_iRadioRecBitrate))
+    If $g_sRadioRecFormat = "WAV" Then GUICtrlSetState($cbo_RecBitrate, $GUI_DISABLE)
+
+    GUICtrlCreateLabel(_T("Recording channels:"), 30, 312, 140, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $cbo_RecChannels = GUICtrlCreateCombo("", 180, 307, 230, 20, $CBS_DROPDOWNLIST)
+    GUICtrlSetData(-1, _TL("Stereo|Mono"))
+    _GUICtrlComboBox_SetCurSel($cbo_RecChannels, ($g_iRadioRecChannels = 1) ? 1 : 0)
+
+    GUICtrlCreateLabel(_T("Sample rate:"), 30, 347, 140, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $cbo_RecRate = GUICtrlCreateCombo("", 180, 342, 230, 20, $CBS_DROPDOWNLIST)
+    GUICtrlSetData(-1, _TL("Same as the station|22050 Hz|44100 Hz|48000 Hz"))
+    _GUICtrlComboBox_SetCurSel($cbo_RecRate, _RadioRec_Idx($g_aRadioRecRates, $g_iRadioRecRate))
+
+    GUICtrlCreateLabel(_T("Stop recording automatically after (minutes, 0 = never):"), 30, 383, 380, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $inp_RecAutoStop = GUICtrlCreateInput(String($g_iRadioRecAutoStop), 30, 406, 80, 22, $ES_NUMBER)
+    _AllowUIPI($inp_RecAutoStop)
+
+    GUICtrlCreateLabel(_T("Recording volume (0-100):"), 30, 442, 380, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $sld_RecVol = GUICtrlCreateSlider(30, 464, 380, 30, BitOR(0x0001, $WS_TABSTOP))
+    GUICtrlSetLimit($sld_RecVol, 100, 0)
+    GUICtrlSendMsg($sld_RecVol, 0x0417, 0, 5)
+    GUICtrlSendMsg($sld_RecVol, 0x0415, 0, 10)
+    GUICtrlSetData($sld_RecVol, $g_iRadioRecVolume)
+
     ; --- Tab Search ---
-    $aTabItems[3] = GUICtrlCreateTabItem(_T("Search"))
+    $aTabItems[4] = GUICtrlCreateTabItem(_T("Search"))
     GUICtrlCreateLabel(_T("Search Settings"), 20, 50, 410, 20)
     GUICtrlSetFont(-1, 10, 800)
     GUICtrlSetColor(-1, 0xFFFFFF)
@@ -7747,13 +8626,31 @@ Func _ShowSettings()
     GUICtrlSetData(-1, "1blueSwitch|2redSwitch|3brownSwitche|iPhone|Samsung_Galaxy|VDH_keyboard1|VDH_keyboard2", $g_sTypingSoundSet)
 
     ; --- Tab Data ---
-    $aTabItems[4] = GUICtrlCreateTabItem(_T("Data"))
+    $aTabItems[5] = GUICtrlCreateTabItem(_T("Data"))
     GUICtrlCreateLabel(_T("Configuration Backup & Restore"), 20, 50, 410, 20)
     GUICtrlSetFont(-1, 10, 800)
     GUICtrlSetColor(-1, 0xFFFFFF)
 
     Local $btn_Backup = GUICtrlCreateButton(_T("Backup Configuration..."), 30, 90, 200, 35)
     Local $btn_Restore = GUICtrlCreateButton(_T("Restore Configuration..."), 30, 140, 200, 35)
+
+    ; --- Tab Shortcuts ---
+    $aTabItems[6] = GUICtrlCreateTabItem(_T("Shortcuts"))
+    GUICtrlCreateLabel(_T("Keyboard Shortcuts"), 20, 50, 410, 20)
+    GUICtrlSetFont(-1, 10, 800)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    GUICtrlCreateLabel(_T("Show shortcuts for:"), 30, 80, 140, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $cbo_HKScope = GUICtrlCreateCombo("", 180, 75, 230, 20, $CBS_DROPDOWNLIST)
+    GUICtrlSetData(-1, _TL("Main window|Player"), _T("Main window"))
+    GUICtrlCreateLabel(_T("Shortcuts (press Enter to change the selected one):"), 30, 110, 380, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $lst_HK = GUICtrlCreateList("", 30, 135, 380, 290, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
+    Local $btn_HKChange = GUICtrlCreateButton(_T("Change..."), 30, 435, 120, 30)
+    Local $btn_HKReset = GUICtrlCreateButton(_T("Reset this one"), 160, 435, 140, 30)
+    Local $btn_HKRemove = GUICtrlCreateButton(_T("Remove"), 310, 435, 100, 30)
+    Local $btn_HKResetAll = GUICtrlCreateButton(_T("Reset all shortcuts"), 30, 475, 380, 30)
+    _HK_FillList($lst_HK, 0)
 
     GUICtrlCreateTabItem("") ; End Tab Control
 
@@ -7769,7 +8666,8 @@ Func _ShowSettings()
     _Settings_AddHelp($chk_AutoUpdateYTDLP, "Checks for a newer version of yt-dlp, the component that fetches video and audio from websites, each time the application starts.")
     _Settings_AddHelp($chk_MuteAppSounds, "When selected, all sounds of the application from the sounds folder are silenced. Typing sounds are not affected, they are controlled by their own option in the Search tab. Clear this option to hear the sounds again.")
     _Settings_AddHelp($chk_ShowLogo, "When selected, the logo and its sound are played each time the application starts. When cleared, only the door sound is played and the application opens straight away.")
-    _Settings_AddHelp($cbo_OutputDevice, "Chooses the audio device used for playback. A different device takes effect after the application restarts.")
+    _Settings_AddHelp($chk_ShowLicenseConfirm, "When selected, the license is confirmed each time the application starts: the door sound is played and you hear that the license is accepted. When cleared, the door sound is not played and the application opens straight away.")
+    _Settings_AddHelp($cbo_OutputDevice, "Chooses the audio device used by the Player and the Radio. The new device is used as soon as you press OK.")
     _Settings_AddHelp($chk_SkipSilence, "Skips over silent gaps in a track while it plays. Recommended only for music.")
     _Settings_AddHelp($cbo_AnnouncementMode, "Chooses what is announced when you seek: nothing, the position as a percentage, or the position as a time.")
     _Settings_AddHelp($cbo_AfterAction, "Chooses what happens when a video finishes: close the player, replay the video, or do nothing.")
@@ -7787,9 +8685,26 @@ Func _ShowSettings()
     _Settings_AddHelp($inp_DownloadPath, "Shows the folder where downloaded files are saved. This box is read-only. Use the Change Path button to choose another folder.")
     _Settings_AddHelp($btn_ChangePath, "Opens a window where you choose another folder for downloads.")
     _Settings_AddHelp($btn_ResetPath, "Sets the download folder back to the default download folder in the application folder.")
+    _Settings_AddHelp($inp_RecPath, "Shows the folder where radio recordings are saved. This box is read-only. Use the Change Path button to choose another folder.")
+    _Settings_AddHelp($btn_RecChange, "Opens a window where you choose another folder for radio recordings.")
+    _Settings_AddHelp($btn_RecReset, "Sets the recording folder back to the default radio_recording folder in the application folder.")
+    _Settings_AddHelp($btn_RecOpen, "Opens the recording folder in Windows Explorer.")
+    _Settings_AddHelp($cbo_RecFormat, "Chooses the audio format of radio recordings. These are the same audio formats as the Download feature.")
+    _Settings_AddHelp($cbo_RecBitrate, "Chooses the quality of MP3, M4A and OGG recordings in kilobits per second. A higher number sounds better and makes a bigger file. WAV is not compressed, so it ignores this setting.")
+    _Settings_AddHelp($cbo_RecChannels, "Records in stereo (left and right) or in mono (one channel, half the file size).")
+    _Settings_AddHelp($cbo_RecRate, "Chooses the sampling rate of the recording. Same as the station keeps the rate the station uses.")
+    _Settings_AddHelp($sld_RecVol, "Sets how loud the recordings are, from 0 to 100, on the same scale as the radio volume. 100 is the full volume of the station. Use the left and right arrows to change it by 5, Page Up and Page Down by 10.")
+    _Settings_AddHelp($inp_RecAutoStop, "The recording stops by itself after this many minutes. Enter 0 to record until you stop it.")
     _Settings_AddHelp($chk_VoiceAutoSearch, "Starts the search automatically when you finish entering it by voice, so you do not need to press the Search button.")
     _Settings_AddHelp($chk_TypingSound, "Plays a key sound as you type in the search box. Choose the sound in the list below.")
     _Settings_AddHelp($cbo_TypingSoundSet, "Chooses the keyboard sound played when you type in the search box. Use the arrow keys to browse the list.")
+    _Settings_AddHelp($chk_ResumeLocal, "When selected, an audio file you open from your computer continues from the point where you stopped listening to it last time. Each file remembers its own position.")
+    _Settings_AddHelp($cbo_HKScope, "Chooses which shortcuts are listed: those of the main window or those of the player.")
+    _Settings_AddHelp($lst_HK, "Lists the actions and their shortcuts. Use the Up and Down arrow keys to choose an action and press Enter to change its shortcut.")
+    _Settings_AddHelp($btn_HKChange, "Opens a window where you press the new keys for the selected action, or choose them from a list.")
+    _Settings_AddHelp($btn_HKReset, "Sets the selected action back to its original shortcut.")
+    _Settings_AddHelp($btn_HKRemove, "Removes the shortcut of the selected action, so the action has no shortcut.")
+    _Settings_AddHelp($btn_HKResetAll, "Sets every shortcut of the main window and the player back to the original keys.")
     _Settings_AddHelp($btn_Backup, "Saves a backup copy of your configuration to a location you choose.")
     _Settings_AddHelp($btn_Restore, "Restores your configuration from a backup file you choose.")
     _Settings_AddHelp($btn_Save, "Saves all your changes and closes Settings.")
@@ -7804,6 +8719,7 @@ Func _ShowSettings()
     _Settings_ToggleHotKeys(True)
 
     While 1
+        _SyncEnterAccel($g_hSettingsGui, $aAccelSettings, $lst_HK, $bEnterAccSet)
         Local $nMsg = _GuiMsg($g_hSettingsGui)
         Switch $nMsg
             Case $GUI_EVENT_CLOSE, $btn_Cancel
@@ -7825,6 +8741,42 @@ Func _ShowSettings()
                 Local $iPrev = ($iCurr - 1 < 0) ? $iTabCount - 1 : $iCurr - 1
                 GUICtrlSetState($aTabItems[$iPrev], $GUI_SHOW)
                 ControlFocus($g_hSettingsGui, "", $g_hSettingsTab)
+
+            Case $cbo_HKScope
+                _HK_FillList($lst_HK, _GUICtrlComboBox_GetCurSel($cbo_HKScope))
+
+            Case $btn_HKChange, $hDummyEnterSet
+                Local $iHKPos = _GUICtrlListBox_GetCurSel($lst_HK)
+                If $iHKPos >= 0 Then
+                    Local $iHKReg = $g_aHKListIdx[$iHKPos]
+                    Local $sHKNew = _HK_EditDialog($iHKReg, $g_hSettingsGui)
+                    If $sHKNew <> "" Then _HK_TryAssign($iHKReg, $sHKNew, $g_hSettingsGui)
+                    _HK_FillList($lst_HK, _GUICtrlComboBox_GetCurSel($cbo_HKScope), $iHKPos)
+                    ControlFocus($g_hSettingsGui, "", $lst_HK)
+                EndIf
+
+            Case $btn_HKReset
+                Local $iHKPos2 = _GUICtrlListBox_GetCurSel($lst_HK)
+                If $iHKPos2 >= 0 Then
+                    Local $iHKReg2 = $g_aHKListIdx[$iHKPos2]
+                    _HK_TryAssign($iHKReg2, $g_aHK[$iHKReg2][2], $g_hSettingsGui)
+                    _HK_FillList($lst_HK, _GUICtrlComboBox_GetCurSel($cbo_HKScope), $iHKPos2)
+                EndIf
+
+            Case $btn_HKRemove
+                Local $iHKPos3 = _GUICtrlListBox_GetCurSel($lst_HK)
+                If $iHKPos3 >= 0 Then
+                    $g_aHKWork[$g_aHKListIdx[$iHKPos3]] = "none"
+                    _HK_FillList($lst_HK, _GUICtrlComboBox_GetCurSel($cbo_HKScope), $iHKPos3)
+                EndIf
+
+            Case $btn_HKResetAll
+                If MsgBox(36, _T("Confirm"), _T("Are you sure you want to reset all shortcuts to their original keys?"), 0, $g_hSettingsGui) = 6 Then
+                    For $iHKr = 0 To $g_iHKCount - 1
+                        $g_aHKWork[$iHKr] = $g_aHK[$iHKr][2]
+                    Next
+                    _HK_FillList($lst_HK, _GUICtrlComboBox_GetCurSel($cbo_HKScope))
+                EndIf
 
             Case $btn_Backup
                 Local $sSavePath = FileSaveDialog(_T("Select backup location"), @DesktopDir, "Zip Archive (*.zip)", 2, "VDH_Config_Backup.zip")
@@ -7893,6 +8845,30 @@ Func _ShowSettings()
                 If Not FileExists($sTempDLPath) Then DirCreate($sTempDLPath)
                 GUICtrlSetData($inp_DownloadPath, $sTempDLPath)
 
+            Case $btn_RecChange
+                Local $sNewRecPath = FileSelectFolder(_T("Select Recording Folder"), "", 1, $sTempRecPath, $g_hSettingsGui)
+                If Not @error And $sNewRecPath <> "" Then
+                    $sTempRecPath = $sNewRecPath
+                    GUICtrlSetData($inp_RecPath, $sTempRecPath)
+                EndIf
+
+            Case $btn_RecReset
+                $sTempRecPath = @ScriptDir & "\radio_recording"
+                If Not FileExists($sTempRecPath) Then DirCreate($sTempRecPath)
+                GUICtrlSetData($inp_RecPath, $sTempRecPath)
+
+            Case $btn_RecOpen
+                If Not FileExists($sTempRecPath) Then DirCreate($sTempRecPath)
+                ShellExecute($sTempRecPath)
+
+            Case $cbo_RecFormat
+                ; WAV is not compressed: the bitrate does not apply
+                If _GUICtrlComboBox_GetCurSel($cbo_RecFormat) = 3 Then
+                    GUICtrlSetState($cbo_RecBitrate, $GUI_DISABLE)
+                Else
+                    GUICtrlSetState($cbo_RecBitrate, $GUI_ENABLE)
+                EndIf
+
             Case $btn_Save
                 ; Read checkbox states
                 $g_bAutoUpdate = (GUICtrlRead($chk_AutoUpdate) = $GUI_CHECKED)
@@ -7901,13 +8877,19 @@ Func _ShowSettings()
                 $g_bAutoUpdateYTDLP = (GUICtrlRead($chk_AutoUpdateYTDLP) = $GUI_CHECKED)
                 $g_bMuteAppSounds = (GUICtrlRead($chk_MuteAppSounds) = $GUI_CHECKED)
                 $g_bShowLogo = (GUICtrlRead($chk_ShowLogo) = $GUI_CHECKED)
+                $g_bShowLicenseConfirm = (GUICtrlRead($chk_ShowLicenseConfirm) = $GUI_CHECKED)
                 If $g_bMuteAppSounds Then DllCall("winmm.dll", "int", "PlaySoundW", "ptr", 0, "ptr", 0, "dword", 0) ; dừng âm thanh đang phát
                 $g_bVoiceAutoSearch = (GUICtrlRead($chk_VoiceAutoSearch) = $GUI_CHECKED)
                 $g_bTypingSoundEnabled = (GUICtrlRead($chk_TypingSound) = $GUI_CHECKED)
                 $g_sTypingSoundSet = GUICtrlRead($cbo_TypingSoundSet)
                 $g_bSkipSilence = (GUICtrlRead($chk_SkipSilence) = $GUI_CHECKED)
-                $g_iEqPreset = _GUICtrlComboBox_GetCurSel($cbo_Equalizer) - 1
-                If $g_iEqPreset < -1 Or $g_iEqPreset > 17 Then $g_iEqPreset = -1
+                Local $iEqSel = _GUICtrlComboBox_GetCurSel($cbo_Equalizer)
+                If $iEqSel = 19 Then
+                    $g_iEqPreset = -2 ; Custom curve (set in the Equalizer window)
+                Else
+                    $g_iEqPreset = $iEqSel - 1
+                    If $g_iEqPreset < -1 Or $g_iEqPreset > 17 Then $g_iEqPreset = -1
+                EndIf
                 $g_bNormalizeVolume = (GUICtrlRead($chk_NormalizeVolume) = $GUI_CHECKED)
                 _VLC_ApplyEqualizer() ; applies to the track that is playing, if any
                 $g_iStereoMode = _GUICtrlComboBox_GetCurSel($cbo_StereoMode)
@@ -7931,6 +8913,7 @@ Func _ShowSettings()
                 EndIf
                 _Pan_Sync(True) ; left ear only / right ear only (and going back to normal) work through the audio session channel levels
                 $g_bContinueWatching = (GUICtrlRead($chk_ContinueWatching) = $GUI_CHECKED)
+                $g_bResumeLocal = (GUICtrlRead($chk_ResumeLocal) = $GUI_CHECKED)
                 $g_bSaveHistory = (GUICtrlRead($chk_SaveHistory) = $GUI_CHECKED)
                 $g_bSaveSearchHistory = (GUICtrlRead($chk_SaveSearchHistory) = $GUI_CHECKED)
                 $g_iAnnouncementMode = _GUICtrlComboBox_GetCurSel($cbo_AnnouncementMode)
@@ -7973,6 +8956,7 @@ Func _ShowSettings()
                 IniWrite($CONFIG_FILE, "Settings", "AutoUpdateYTDLP", $g_bAutoUpdateYTDLP ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "MuteAppSounds", $g_bMuteAppSounds ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "ShowLogo", $g_bShowLogo ? "true" : "false")
+                IniWrite($CONFIG_FILE, "Settings", "ShowLicenseConfirm", $g_bShowLicenseConfirm ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "VoiceAutoSearch", $g_bVoiceAutoSearch ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "SkipSilence", $g_bSkipSilence ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "EqualizerPreset", String($g_iEqPreset))
@@ -7981,6 +8965,7 @@ Func _ShowSettings()
                 IniWrite($CONFIG_FILE, "Settings", "AutoPan", $g_bAutoPan ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "AutoPanPeriod", String($g_iAutoPanPeriod))
                 IniWrite($CONFIG_FILE, "Settings", "ContinueWatching", $g_bContinueWatching ? "true" : "false")
+                IniWrite($CONFIG_FILE, "Settings", "ResumeLocal", $g_bResumeLocal ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "SaveHistory", $g_bSaveHistory ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "SaveSearchHistory", $g_bSaveSearchHistory ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "AnnouncementMode", String($g_iAnnouncementMode))
@@ -7998,7 +8983,31 @@ Func _ShowSettings()
                 IniWrite($CONFIG_FILE, "Settings", "RWStep", String($g_iRWStep))
                 IniWrite($CONFIG_FILE, "Settings", "TypingSoundEnabled", $g_bTypingSoundEnabled ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "TypingSoundSet", $g_sTypingSoundSet)
+                ; --- Radio recording ---
+                Local $iRecSel = _GUICtrlComboBox_GetCurSel($cbo_RecFormat)
+                If $iRecSel >= 0 And $iRecSel < UBound($g_aRadioRecFormats) Then $g_sRadioRecFormat = $g_aRadioRecFormats[$iRecSel]
+                $iRecSel = _GUICtrlComboBox_GetCurSel($cbo_RecBitrate)
+                If $iRecSel >= 0 And $iRecSel < UBound($g_aRadioRecBitrates) Then $g_iRadioRecBitrate = $g_aRadioRecBitrates[$iRecSel]
+                $g_iRadioRecChannels = (_GUICtrlComboBox_GetCurSel($cbo_RecChannels) = 1) ? 1 : 2
+                $iRecSel = _GUICtrlComboBox_GetCurSel($cbo_RecRate)
+                If $iRecSel >= 0 And $iRecSel < UBound($g_aRadioRecRates) Then $g_iRadioRecRate = $g_aRadioRecRates[$iRecSel]
+                $g_iRadioRecAutoStop = Int(GUICtrlRead($inp_RecAutoStop))
+                If $g_iRadioRecAutoStop < 0 Then $g_iRadioRecAutoStop = 0
+                If $g_iRadioRecAutoStop > 1440 Then $g_iRadioRecAutoStop = 1440
+                If StringStripWS($sTempRecPath, 3) <> "" Then $g_sRadioRecPath = $sTempRecPath
+                If Not FileExists($g_sRadioRecPath) Then DirCreate($g_sRadioRecPath)
+                IniWrite($CONFIG_FILE, "Settings", "RadioRecPath", $g_sRadioRecPath)
+                IniWrite($CONFIG_FILE, "Settings", "RadioRecFormat", $g_sRadioRecFormat)
+                IniWrite($CONFIG_FILE, "Settings", "RadioRecBitrate", String($g_iRadioRecBitrate))
+                IniWrite($CONFIG_FILE, "Settings", "RadioRecChannels", String($g_iRadioRecChannels))
+                IniWrite($CONFIG_FILE, "Settings", "RadioRecSampleRate", String($g_iRadioRecRate))
+                IniWrite($CONFIG_FILE, "Settings", "RadioRecAutoStop", String($g_iRadioRecAutoStop))
+                $g_iRadioRecVolume = Int(GUICtrlRead($sld_RecVol))
+                If $g_iRadioRecVolume < 0 Then $g_iRadioRecVolume = 0
+                If $g_iRadioRecVolume > 100 Then $g_iRadioRecVolume = 100
+                IniWrite($CONFIG_FILE, "Settings", "RadioRecVolume", String($g_iRadioRecVolume))
                 _ResolveTypingSounds()
+                _HK_CommitWork() ; luu phim tat tuy chinh va ap dung ngay cho cua so chinh
                 ; Handle Auto-start in Registry
                 Local $sRegKey = "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run"
                 If $g_bAutoStart Then
@@ -8024,11 +9033,20 @@ Func _ShowSettings()
                     EndIf
                 EndIf
                 If $bDeviceChanged Then
-                    _AppSoundPlay("sounds/restart.wav")
-                    Local $iMsgBox = MsgBox(4, _T("Restart Required"), _T("Audio output device changed. Do you want to restart the application now to apply the changes?"))
-                    If $iMsgBox = 6 Then
-                        ShellExecute(@ScriptFullPath, "/restart")
-                        Exit
+                    ; the Player and the Radio share one libvlc instance: recreate it with the new device, no restart needed
+                    While $g_iPanSess > 0
+                        _Pan_DropSession($g_iPanSess - 1)
+                    WEnd
+                    If _VLC_Reinit() Then
+                        _Pan_Sync(True)
+                        _ReportStatus(_T("Audio output device changed. The Player and the Radio now use the new device."))
+                    Else
+                        _AppSoundPlay("sounds/restart.wav")
+                        Local $iMsgBox = MsgBox(4, _T("Restart Required"), _T("Audio output device changed. Do you want to restart the application now to apply the changes?"))
+                        If $iMsgBox = 6 Then
+                            ShellExecute(@ScriptFullPath, "/restart")
+                            Exit
+                        EndIf
                     EndIf
                 EndIf
                 Return
@@ -8478,7 +9496,7 @@ Func _ShowCollections()
     GUICtrlSetFont(-1, 10, 800)
 
     Local $lst_col = GUICtrlCreateList("", 10, 35, 380, 350, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
-    
+
     Local $btn_create = GUICtrlCreateButton(_T("&Create New Collection"), 10, 395, 185, 35)
     Local $btn_rename = GUICtrlCreateButton(_T("&Rename"), 205, 395, 185, 35)
     Local $btn_delete = GUICtrlCreateButton(_T("&Delete"), 10, 440, 185, 35)
@@ -8497,7 +9515,7 @@ Func _ShowCollections()
 
     While 1
         Local $nMsg = _GuiMsg($hColGui)
-        
+
         ; Handle Enter key for buttons
         If $nMsg = $hDummyEnterCol Then
             Local $hFocus = ControlGetHandle($hColGui, "", ControlGetFocus($hColGui))
@@ -8663,7 +9681,7 @@ Func _ShowCollectionItems($sColName)
     Local $btn_back = GUICtrlCreateButton(_T("&Go Back"), 10, 400, 380, 35)
 
     GUISetState(@SW_SHOW, $hColItemsGui)
-    
+
     Local $aColIds[1], $aColTitles[1]
     _LoadCollectionItems($sFile, $lst_items, $aColIds, $aColTitles)
     ControlFocus($hColItemsGui, "", $lst_items)
@@ -8734,7 +9752,7 @@ Func _ShowCollectionItemContextMenu($sColFile, $hParent, $hList, ByRef $aIds, By
     _GUICtrlMenu_AddMenuItem($hMenu, _T("View &Lyrics..."), 1009)
     _GUICtrlMenu_AddMenuItem($hMenu, _T("Add to &queue..."), 1013)
     _GUICtrlMenu_AddMenuItem($hMenu, _T("Add to do&wnload queue..."), 1015)
-    
+
     _GUICtrlMenu_AddMenuItem($hMenu, _T("&Remove from Collection"), 2001)
 
     Local $hSubMenu_Share = _GUICtrlMenu_CreatePopup()
@@ -8854,7 +9872,7 @@ Func _DownloadCollection($sColName)
     Local $sFile = $COLLECTIONS_DIR & "\" & $sColName & ".col"
     Local $hFile = FileOpen($sFile, 0 + 256)
     If $hFile = -1 Then Return
-    
+
     Local $aLinks = [0]
     While 1
         Local $sLine = FileReadLine($hFile)
@@ -8865,7 +9883,7 @@ Func _DownloadCollection($sColName)
         EndIf
     WEnd
     FileClose($hFile)
-    
+
     If UBound($aLinks) <= 1 Then
         MsgBox(48, _T("Info"), _T("Collection is empty."))
         Return
@@ -8962,6 +9980,7 @@ Func _DownloadCollection($sColName)
         EndIf
     Next
     GUIDelete($hProgGui)
+_DLSound_Stop()
 _AppSoundPlay(@ScriptDir & "\sounds\download_finish.wav")
     _ShowDownloadCompleteDialog($sFinalDownloadPath, _GetNewDownloadedFiles($sFinalDownloadPath, $sCollSnapshot), _T("Success"), _T("Collection download complete!"))
 EndFunc
@@ -8974,7 +9993,7 @@ Func _AddtoCollection($sID, $sTitle)
     GUICtrlSetFont(-1, 10, 800)
     Local $lst = GUICtrlCreateList("", 10, 35, 280, 255, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
     Local $btn_add = GUICtrlCreateButton(_T("&Add to Collection"), 10, 300, 280, 35)
-    
+
     _LoadCollectionsList($lst)
     GUISetState(@SW_SHOW, $hSelectCol)
     ControlFocus($hSelectCol, "", $lst)
@@ -8998,7 +10017,7 @@ Func _AddtoCollection($sID, $sTitle)
                 Local $hFileRead = FileOpen($sFile, 0 + 256)
                 Local $sContent = FileRead($hFileRead)
                 FileClose($hFileRead)
-                
+
                 If StringInStr($sContent, $sID & "|") Then
                     MsgBox(48, _T("Info"), _T("This video is already in the collection."))
                 Else
@@ -9163,7 +10182,7 @@ Func _ShowCollectionContextMenu_Shuffle($hParent, $hList)
 
     Local $hMenu = _GUICtrlMenu_CreatePopup()
     _GUICtrlMenu_AddMenuItem($hMenu, _T("Play shuffle"), 3001)
-    
+
     If $iCount < 2 Then
         _GUICtrlMenu_EnableMenuItem($hMenu, 3001, 1) ; Disable if less than 2
     EndIf
@@ -9183,7 +10202,7 @@ Func _SavePlaybackPosition($sID, $iMS)
 EndFunc
 
 Func _GetPlaybackPosition($sID)
-If $sID = "" Then Return 0  
+If $sID = "" Then Return 0
     Return Int(IniRead($PLAYBACK_POSITIONS_FILE, "Positions", $sID, "0"))
 EndFunc
 
@@ -9194,6 +10213,1963 @@ Func _AllowUIPI($hWnd)
     $aResult = DllCall("user32.dll", "bool", "ChangeWindowMessageFilterEx", "hwnd", $hWnd, "uint", 0x0233, "dword", 1, "ptr", 0) ; WM_DROPFILES
     $aResult = DllCall("user32.dll", "bool", "ChangeWindowMessageFilterEx", "hwnd", $hWnd, "uint", 0x004A, "dword", 1, "ptr", 0) ; WM_COPYDATA
     Return True
+EndFunc
+
+
+; ======================================================================
+;  FILE HELPERS, RECENT FILES / FOLDERS, RESUME THEO TUNG FILE NGHE
+; ======================================================================
+Func _RF_Read($sFile)
+    Local $aEmpty[0]
+    If Not FileExists($sFile) Then Return $aEmpty
+    Local $h = FileOpen($sFile, 256)
+    If $h = -1 Then Return $aEmpty
+    Local $s = FileRead($h)
+    FileClose($h)
+    Local $a = StringSplit(StringStripCR($s), @LF, 2)
+    Local $aOut[UBound($a)], $n = 0
+    For $i = 0 To UBound($a) - 1
+        If StringStripWS($a[$i], 3) = "" Then ContinueLoop
+        $aOut[$n] = $a[$i]
+        $n += 1
+    Next
+    ReDim $aOut[$n]
+    Return $aOut
+EndFunc
+
+Func _RF_Write($sFile, $aLines, $iStart = 0)
+    Local $s = ""
+    For $i = $iStart To UBound($aLines) - 1
+        $s &= $aLines[$i] & @CRLF
+    Next
+    Local $h = FileOpen($sFile, 2 + 8 + 256)
+    If $h = -1 Then Return False
+    FileWrite($h, $s)
+    FileClose($h)
+    Return True
+EndFunc
+
+Func _Recent_Key($sLine)
+    Local $i = StringInStr($sLine, "|")
+    If $i > 0 Then $sLine = StringLeft($sLine, $i - 1)
+    Return StringLower($sLine)
+EndFunc
+
+; Dua mot muc len dau danh sach (bo muc trung), toi da $RECENT_MAX muc
+Func _Recent_Push($sFile, $sEntry)
+    Local $a = _RF_Read($sFile)
+    Local $sKey = _Recent_Key($sEntry)
+    Local $aNew[UBound($a) + 1], $n = 0
+    $aNew[$n] = $sEntry
+    $n += 1
+    For $i = 0 To UBound($a) - 1
+        If _Recent_Key($a[$i]) = $sKey Then ContinueLoop
+        If $n >= $RECENT_MAX Then ExitLoop
+        $aNew[$n] = $a[$i]
+        $n += 1
+    Next
+    ReDim $aNew[$n]
+    _RF_Write($sFile, $aNew)
+EndFunc
+
+Func _Recent_AddFile($sFile)
+    If $sFile = "" Then Return
+    _Recent_Push($RECENT_FILES_FILE, $sFile)
+EndFunc
+
+Func _Recent_FolderLast($sFolder)
+    Local $a = _RF_Read($RECENT_FOLDERS_FILE)
+    Local $sK = StringLower($sFolder)
+    For $i = 0 To UBound($a) - 1
+        If _Recent_Key($a[$i]) = $sK Then
+            Local $iP = StringInStr($a[$i], "|")
+            Return ($iP > 0) ? StringMid($a[$i], $iP + 1) : ""
+        EndIf
+    Next
+    Return ""
+EndFunc
+
+; $sLast = bai dang nghe trong thu muc (de lan sau mo lai nghe tiep dung bai do)
+Func _Recent_AddFolder($sFolder, $sLast = "")
+    If $sFolder = "" Then Return
+    If $sLast = "" Then $sLast = _Recent_FolderLast($sFolder)
+    _Recent_Push($RECENT_FOLDERS_FILE, $sFolder & "|" & $sLast)
+EndFunc
+
+Func _Recent_RemoveAt($sFile, $iIndex)
+    Local $a = _RF_Read($sFile)
+    If $iIndex < 0 Or $iIndex >= UBound($a) Then Return
+    Local $aNew[UBound($a)], $n = 0
+    For $i = 0 To UBound($a) - 1
+        If $i = $iIndex Then ContinueLoop
+        $aNew[$n] = $a[$i]
+        $n += 1
+    Next
+    ReDim $aNew[$n]
+    _RF_Write($sFile, $aNew)
+EndFunc
+
+; Mot lan duy nhat: chuyen cac bai nghe cuc bo cu trong Watch History sang Recent Files
+Func _Recent_MigrateHistory()
+    If IniRead($CONFIG_FILE, "Settings", "RecentMigrated", "0") = "1" Then Return
+    IniWrite($CONFIG_FILE, "Settings", "RecentMigrated", "1")
+    If Not FileExists($HISTORY_FILE) Then Return
+    Local $a = _RF_Read($HISTORY_FILE)
+    Local $aKeep[UBound($a) + 1], $nKeep = 0
+    Local $aFiles[UBound($a) + 1], $nF = 0
+    Local $aP
+    For $i = 0 To UBound($a) - 1
+        $aP = StringSplit($a[$i], "|")
+        If $aP[0] >= 3 And $aP[3] = "local_audio" Then
+            $aFiles[$nF] = $aP[1]
+            $nF += 1
+        Else
+            $aKeep[$nKeep] = $a[$i]
+            $nKeep += 1
+        EndIf
+    Next
+    If $nF = 0 Then Return
+    ReDim $aKeep[$nKeep]
+    _RF_Write($HISTORY_FILE, $aKeep)
+    For $i = 0 To $nF - 1
+        If FileExists($aFiles[$i]) Then _Recent_Push($RECENT_FILES_FILE, $aFiles[$i])
+    Next
+EndFunc
+
+; ---------- Resume theo tung file ----------
+Func _LocalPos_Get($sPath)
+    If $sPath = "" Then Return 0
+    Local $a = _RF_Read($LOCAL_POSITIONS_FILE)
+    Local $sK = StringLower($sPath)
+    Local $p, $iMs, $iLen
+    For $i = UBound($a) - 1 To 0 Step -1
+        $p = StringSplit($a[$i], "|", 2)
+        If UBound($p) >= 2 And StringLower($p[0]) = $sK Then
+            $iMs = Int($p[1])
+            $iLen = (UBound($p) >= 3) ? Int($p[2]) : 0
+            If $iMs < 3000 Then Return 0
+            If $iLen > 0 And $iMs > $iLen - 5000 Then Return 0
+            Return $iMs
+        EndIf
+    Next
+    Return 0
+EndFunc
+
+Func _LocalPos_Write($sPath, $iMs, $iLen, $bRemoveOnly)
+    Local $a = _RF_Read($LOCAL_POSITIONS_FILE)
+    Local $sK = StringLower($sPath)
+    Local $aOut[UBound($a) + 1], $n = 0, $iBar
+    For $i = 0 To UBound($a) - 1
+        $iBar = StringInStr($a[$i], "|")
+        If $iBar > 0 And StringLower(StringLeft($a[$i], $iBar - 1)) = $sK Then ContinueLoop
+        $aOut[$n] = $a[$i]
+        $n += 1
+    Next
+    If Not $bRemoveOnly Then
+        $aOut[$n] = $sPath & "|" & Int($iMs) & "|" & Int($iLen)
+        $n += 1
+    EndIf
+    ReDim $aOut[$n]
+    Local $iStart = ($n > 500) ? $n - 500 : 0
+    _RF_Write($LOCAL_POSITIONS_FILE, $aOut, $iStart)
+EndFunc
+
+Func _LocalPos_Save($sPath, $iMs, $iLen)
+    If $sPath = "" Or $iMs < 0 Then Return
+    _LocalPos_Write($sPath, $iMs, $iLen, False)
+EndFunc
+
+Func _LocalPos_Clear($sPath)
+    If $sPath = "" Then Return
+    _LocalPos_Write($sPath, 0, 0, True)
+EndFunc
+
+; ---------- Cua so Recent Files / Recent Folders ----------
+Func _ShowRecentFiles()
+    _ShowRecentList(False)
+EndFunc
+
+Func _ShowRecentFolders()
+    _ShowRecentList(True)
+EndFunc
+
+Func _Recent_Display($sEntry, $bFolder)
+    Local $sPath = $sEntry, $sLast = ""
+    If $bFolder Then
+        Local $iBar = StringInStr($sEntry, "|")
+        If $iBar > 0 Then
+            $sPath = StringLeft($sEntry, $iBar - 1)
+            $sLast = StringMid($sEntry, $iBar + 1)
+        EndIf
+    EndIf
+    Local $sName = StringRegExpReplace($sPath, "^.*[\\/]", "")
+    If $sName = "" Then $sName = $sPath
+    Local $sDir = StringRegExpReplace($sPath, "[\\/][^\\/]*$", "")
+    Local $sOut = $sName
+    If $bFolder Then
+        $sOut &= " (" & $sPath & ")"
+        If $sLast <> "" Then
+            Local $sLastName = StringRegExpReplace(StringRegExpReplace($sLast, "^.*[\\/]", ""), "\.[A-Za-z0-9]+$", "")
+            $sOut &= " - " & _TF("Last played: {1}", $sLastName)
+        EndIf
+    ElseIf $sDir <> $sPath Then
+        $sOut &= " (" & $sDir & ")"
+    EndIf
+    Return StringReplace($sOut, "|", "/")
+EndFunc
+
+Func _Recent_Fill($idList, $sFile, $bFolders)
+    Local $a = _RF_Read($sFile)
+    Local $s = ""
+    For $i = 0 To UBound($a) - 1
+        $s &= ($i + 1) & ". " & _Recent_Display($a[$i], $bFolders) & "|"
+    Next
+    GUICtrlSetData($idList, "")
+    If $s <> "" Then GUICtrlSetData($idList, StringTrimRight($s, 1))
+    Return $a
+EndFunc
+
+; Tra ve False neu muc khong con ton tai
+Func _Recent_Play($sEntry, $bFolder)
+    If $bFolder Then
+        Local $iBar = StringInStr($sEntry, "|")
+        Local $sFolder = ($iBar > 0) ? StringLeft($sEntry, $iBar - 1) : $sEntry
+        Local $sLast = ($iBar > 0) ? StringMid($sEntry, $iBar + 1) : ""
+        If Not FileExists($sFolder) Then
+            MsgBox(48, _T("Error"), _T("This folder no longer exists."))
+            Return False
+        EndIf
+        _OpenAudioFolder($sFolder, $sLast)
+    Else
+        If Not FileExists($sEntry) Then
+            MsgBox(48, _T("Error"), _T("This file no longer exists."))
+            Return False
+        EndIf
+        _PlayLocalAudioFile($sEntry)
+    EndIf
+    Return True
+EndFunc
+
+Func _ShowRecentList($bFolders)
+    Local $sFile = $bFolders ? $RECENT_FOLDERS_FILE : $RECENT_FILES_FILE
+    Local $aProbe = _RF_Read($sFile)
+    If UBound($aProbe) = 0 Then
+        MsgBox(64, _T("Info"), $bFolders ? _T("No recent folders yet.") : _T("No recent files yet."))
+        Return
+    EndIf
+
+    Local $hGui = GUICreate($bFolders ? _T("Recent Folders") : _T("Recent Files"), 440, 440)
+    GUISetBkColor($COLOR_BLUE)
+    GUICtrlCreateLabel($bFolders ? _T("Your recent folders (press Enter to play):") : _T("Your recent files (press Enter to play):"), 10, 10, 420, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    GUICtrlSetFont(-1, 10, 800)
+    Local $lst = GUICtrlCreateList("", 10, 35, 420, 280, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
+    Local $btnPlay = GUICtrlCreateButton(_T("Play"), 10, 325, 205, 30)
+    Local $btnRemove = GUICtrlCreateButton(_T("Remove selected"), 225, 325, 205, 30)
+    Local $btnClear = GUICtrlCreateButton(_T("Clear all"), 10, 365, 205, 30)
+    Local $btnClose = GUICtrlCreateButton(_T("Close"), 225, 365, 205, 30)
+
+    Local $hDummyEnter = GUICtrlCreateDummy()
+    Local $hDummyDel = GUICtrlCreateDummy()
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $aAccel[3][2] = [["{ENTER}", $hDummyEnter], ["{DEL}", $hDummyDel], ["{ESC}", $hDummyEsc]]
+    GUISetAccelerators($aAccel, $hGui)
+    Local $bEnterOn = True
+
+    GUISetState(@SW_SHOW, $hGui)
+    _AllowUIPI($hGui)
+    Local $aItems = _Recent_Fill($lst, $sFile, $bFolders)
+    _GUICtrlListBox_SetCurSel($lst, 0)
+    ControlFocus($hGui, "", $lst)
+
+    Local $aBtns[4] = [$btnPlay, $btnRemove, $btnClear, $btnClose]
+    Local $nMsg, $iSel, $bListFocus
+    While 1
+        _SyncEnterAccel($hGui, $aAccel, $lst, $bEnterOn)
+        $nMsg = _GuiMsg($hGui)
+        $bListFocus = (ControlGetHandle($hGui, "", ControlGetFocus($hGui)) = GUICtrlGetHandle($lst))
+        If $nMsg = $hDummyEnter Then
+            If $bListFocus Then
+                $nMsg = $btnPlay
+            Else
+                Local $iPressed = _EnterFocusedButton($hGui, $aBtns)
+                If $iPressed <> 0 Then $nMsg = $iPressed
+            EndIf
+        ElseIf $nMsg = $hDummyDel Then
+            If $bListFocus Then $nMsg = $btnRemove
+        EndIf
+
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnClose, $hDummyEsc
+                GUIDelete($hGui)
+                Return
+
+            Case $btnPlay
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                If $iSel >= 0 And $iSel < UBound($aItems) Then
+                    If Not _Recent_Play($aItems[$iSel], $bFolders) Then _Recent_RemoveAt($sFile, $iSel)
+                    GUISwitch($hGui)
+                    $aItems = _Recent_Fill($lst, $sFile, $bFolders)
+                    If UBound($aItems) = 0 Then
+                        GUIDelete($hGui)
+                        Return
+                    EndIf
+                    _GUICtrlListBox_SetCurSel($lst, 0)
+                    ControlFocus($hGui, "", $lst)
+                EndIf
+
+            Case $btnRemove
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                If $iSel >= 0 And $iSel < UBound($aItems) Then
+                    _Recent_RemoveAt($sFile, $iSel)
+                    $aItems = _Recent_Fill($lst, $sFile, $bFolders)
+                    If UBound($aItems) = 0 Then
+                        GUIDelete($hGui)
+                        Return
+                    EndIf
+                    If $iSel >= UBound($aItems) Then $iSel = UBound($aItems) - 1
+                    _GUICtrlListBox_SetCurSel($lst, $iSel)
+                    ControlFocus($hGui, "", $lst)
+                EndIf
+
+            Case $btnClear
+                If MsgBox(36, _T("Confirm"), $bFolders ? _T("Are you sure you want to clear all recent folders?") : _T("Are you sure you want to clear all recent files?")) = 6 Then
+                    FileDelete($sFile)
+                    GUIDelete($hGui)
+                    Return
+                EndIf
+        EndSwitch
+        Sleep(10)
+    WEnd
+EndFunc
+
+; ======================================================================
+;  EQUALIZER TUY CHINH (preamp + 10 bang tan), dung chung cho Radio Player va Player
+; ======================================================================
+Func _EQ_LoadCustom()
+    Local $a = StringSplit(IniRead($CONFIG_FILE, "Settings", "EqualizerCustom", ""), "|", 2)
+    If UBound($a) = 11 Then
+        $g_fEqPreamp = Number($a[0])
+        For $i = 0 To 9
+            $g_aEqBands[$i] = Number($a[$i + 1])
+        Next
+    EndIf
+EndFunc
+
+Func _EQ_SaveCustom()
+    Local $s = String($g_fEqPreamp)
+    For $i = 0 To 9
+        $s &= "|" & $g_aEqBands[$i]
+    Next
+    IniWrite($CONFIG_FILE, "Settings", "EqualizerCustom", $s)
+    IniWrite($CONFIG_FILE, "Settings", "EqualizerPreset", String($g_iEqPreset))
+EndFunc
+
+; Doc cac gia tri cua mot preset co san cua libvlc vao $g_fEqPreamp / $g_aEqBands (de thanh truot hien dung)
+Func _EQ_LoadPreset($iPreset)
+    If Not _VLC_Direct_Init() Then Return False
+    Local $aEq = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_audio_equalizer_new_from_preset", "uint", $iPreset)
+    If @error Or Not IsArray($aEq) Or Not $aEq[0] Then Return False
+    Local $p = $aEq[0]
+    Local $aPre = DllCall($hVLC_Dll, "float:cdecl", "libvlc_audio_equalizer_get_preamp", "ptr", $p)
+    If Not @error And IsArray($aPre) Then $g_fEqPreamp = Round($aPre[0], 1)
+    Local $aAmp
+    For $b = 0 To 9
+        $aAmp = DllCall($hVLC_Dll, "float:cdecl", "libvlc_audio_equalizer_get_amp_at_index", "ptr", $p, "uint", $b)
+        If Not @error And IsArray($aAmp) Then $g_aEqBands[$b] = Round($aAmp[0], 1)
+    Next
+    DllCall($hVLC_Dll, "none:cdecl", "libvlc_audio_equalizer_release", "ptr", $p)
+    Return True
+EndFunc
+
+Func _EQ_BandLabel($b)
+    Local $aFallback[10] = [60, 170, 310, 600, 1000, 3000, 6000, 12000, 14000, 16000]
+    Local $fHz = $aFallback[$b]
+    If $hVLC_Dll <> -1 Then
+        Local $aF = DllCall($hVLC_Dll, "float:cdecl", "libvlc_audio_equalizer_get_band_frequency", "uint", $b)
+        If Not @error And IsArray($aF) And $aF[0] > 0 Then $fHz = $aF[0]
+    EndIf
+    If $fHz >= 1000 Then Return StringReplace(String(Round($fHz / 1000, 1)), ".0", "") & " kHz"
+    Return Round($fHz) & " Hz"
+EndFunc
+
+Func _EQ_ValText($fVal)
+    Return ($fVal > 0 ? "+" : "") & Round($fVal, 1) & " dB"
+EndFunc
+
+Func _ShowEqualizerDialog($hParent = 0)
+    If Not _VLC_Direct_Init() Then Return
+    Local $iOldPreset = $g_iEqPreset, $fOldPre = $g_fEqPreamp
+    Local $aOldBands = $g_aEqBands
+    If $g_iEqPreset >= 0 Then _EQ_LoadPreset($g_iEqPreset) ; sliders show the preset's curve
+
+    Local $hGui = GUICreate(_T("Equalizer"), 450, 560, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU, $WS_POPUP), -1, IsHWnd($hParent) ? $hParent : 0)
+    GUISetBkColor($COLOR_BLUE)
+    GUICtrlCreateLabel(_T("Preset:"), 10, 14, 90, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $cboPreset = GUICtrlCreateCombo("", 105, 10, 335, 20, $CBS_DROPDOWNLIST)
+    GUICtrlSetData(-1, _TL("Off|" & _EQ_PresetNames() & "|Custom"))
+    Local $iCustomIdx = 19
+    _GUICtrlComboBox_SetCurSel($cboPreset, ($g_iEqPreset = -2) ? $iCustomIdx : $g_iEqPreset + 1)
+
+    ; slider 0 = preamp, 1..10 = bands
+    Local $aLbl[11], $aSld[11], $aVal[11], $aLast[11]
+    For $k = 0 To 10
+        Local $iY = 50 + $k * 36
+        GUICtrlCreateLabel(($k = 0) ? _T("Preamp") : _EQ_BandLabel($k - 1), 10, $iY + 4, 90, 20)
+        GUICtrlSetColor(-1, 0xFFFFFF)
+        $aSld[$k] = GUICtrlCreateSlider(105, $iY, 260, 30, BitOR(0x0001, $WS_TABSTOP))
+        GUICtrlSetLimit($aSld[$k], 20, -20)
+        GUICtrlSendMsg($aSld[$k], 0x0417, 0, 1) ; TBM_SETLINESIZE
+        GUICtrlSendMsg($aSld[$k], 0x0415, 0, 5) ; TBM_SETPAGESIZE
+        Local $fV = ($k = 0) ? $g_fEqPreamp : $g_aEqBands[$k - 1]
+        GUICtrlSetData($aSld[$k], Round($fV))
+        $aLast[$k] = Round($fV)
+        $aVal[$k] = GUICtrlCreateLabel(_EQ_ValText($aLast[$k]), 372, $iY + 4, 70, 20)
+        GUICtrlSetColor(-1, 0xFFFF00)
+    Next
+
+    Local $btnReset = GUICtrlCreateButton(_T("Reset (flat)"), 10, 455, 140, 32)
+    Local $btnOK = GUICtrlCreateButton(_T("OK"), 160, 455, 135, 32)
+    Local $btnCancel = GUICtrlCreateButton(_T("Cancel"), 305, 455, 135, 32)
+    GUICtrlCreateLabel(_T("Use the Left and Right arrow keys on a slider to change it by 1 dB, Page Up and Page Down by 5 dB."), 10, 495, 430, 40)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $aAccel[1][2] = [["{ESC}", $hDummyEsc]]
+    GUISetAccelerators($aAccel, $hGui)
+    GUISetState(@SW_SHOW, $hGui)
+    _AllowUIPI($hGui)
+    ControlFocus($hGui, "", $cboPreset)
+
+    Local $nMsg, $iSel, $iNow, $bChanged
+    While 1
+        $nMsg = _GuiMsg($hGui)
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnCancel, $hDummyEsc
+                $g_iEqPreset = $iOldPreset
+                $g_fEqPreamp = $fOldPre
+                $g_aEqBands = $aOldBands
+                _VLC_ApplyEqualizer()
+                GUIDelete($hGui)
+                Return False
+
+            Case $btnOK
+                _EQ_SaveCustom()
+                GUIDelete($hGui)
+                Return True
+
+            Case $btnReset
+                For $k = 0 To 10
+                    GUICtrlSetData($aSld[$k], 0)
+                    $aLast[$k] = 0
+                    GUICtrlSetData($aVal[$k], _EQ_ValText(0))
+                Next
+                $g_fEqPreamp = 0
+                For $b = 0 To 9
+                    $g_aEqBands[$b] = 0
+                Next
+                $g_iEqPreset = -2
+                _GUICtrlComboBox_SetCurSel($cboPreset, $iCustomIdx)
+                _VLC_ApplyEqualizer()
+                _NVDA_Speak(_T("Equalizer reset"))
+
+            Case $cboPreset
+                $iSel = _GUICtrlComboBox_GetCurSel($cboPreset)
+                If $iSel = 0 Then
+                    $g_iEqPreset = -1
+                ElseIf $iSel = $iCustomIdx Then
+                    $g_iEqPreset = -2
+                Else
+                    $g_iEqPreset = $iSel - 1
+                    _EQ_LoadPreset($g_iEqPreset)
+                    For $k = 0 To 10
+                        Local $fPV = ($k = 0) ? $g_fEqPreamp : $g_aEqBands[$k - 1]
+                        GUICtrlSetData($aSld[$k], Round($fPV))
+                        $aLast[$k] = Round($fPV)
+                        GUICtrlSetData($aVal[$k], _EQ_ValText($fPV))
+                    Next
+                EndIf
+                _VLC_ApplyEqualizer()
+        EndSwitch
+
+        ; sliders: apply while the user moves them
+        $bChanged = False
+        For $k = 0 To 10
+            $iNow = GUICtrlRead($aSld[$k])
+            If $iNow <> $aLast[$k] Then
+                $aLast[$k] = $iNow
+                If $k = 0 Then
+                    $g_fEqPreamp = $iNow
+                Else
+                    $g_aEqBands[$k - 1] = $iNow
+                EndIf
+                GUICtrlSetData($aVal[$k], _EQ_ValText($iNow))
+                $bChanged = True
+            EndIf
+        Next
+        If $bChanged Then
+            ; the curve no longer matches a preset: make sure the other (unchanged) sliders are kept as they are
+            For $k = 0 To 10
+                If $k = 0 Then
+                    $g_fEqPreamp = $aLast[0]
+                Else
+                    $g_aEqBands[$k - 1] = $aLast[$k]
+                EndIf
+            Next
+            $g_iEqPreset = -2
+            _GUICtrlComboBox_SetCurSel($cboPreset, $iCustomIdx)
+            _VLC_ApplyEqualizer()
+        EndIf
+        Sleep(15)
+    WEnd
+EndFunc
+
+; ======================================================================
+;  RADIO PLAYER (danh ba dai radio radio-browser.info: moi quoc gia / ngon ngu)
+; ======================================================================
+Func _Json_Unescape($s)
+    If StringInStr($s, "\") = 0 Then Return $s
+    Local $sOut = "", $n = StringLen($s), $i = 1, $c, $d, $iCode
+    While $i <= $n
+        $c = StringMid($s, $i, 1)
+        If $c = "\" And $i < $n Then
+            $d = StringMid($s, $i + 1, 1)
+            Switch $d
+                Case "n", "r", "t"
+                    $sOut &= " "
+                    $i += 2
+                Case "u"
+                    $iCode = Dec(StringMid($s, $i + 2, 4))
+                    If $iCode > 0 Then $sOut &= ChrW($iCode)
+                    $i += 6
+                Case Else
+                    $sOut &= $d
+                    $i += 2
+            EndSwitch
+            ContinueLoop
+        EndIf
+        $sOut &= $c
+        $i += 1
+    WEnd
+    Return $sOut
+EndFunc
+
+Func _Json_Str($sObj, $sKey)
+    Local $a = StringRegExp($sObj, '"' & $sKey & '"\s*:\s*"((?:[^"\\]|\\.)*)"', 1)
+    If @error Then Return ""
+    Return _Json_Unescape($a[0])
+EndFunc
+
+Func _Json_Num($sObj, $sKey)
+    Local $a = StringRegExp($sObj, '"' & $sKey & '"\s*:\s*(-?\d+)', 1)
+    If @error Then Return 0
+    Return Int($a[0])
+EndFunc
+
+Func _Radio_ComErr($oErr)
+    ; chi de tranh script bi dung khi WinHttp gap loi ket noi
+EndFunc
+
+; Tra ve noi dung (UTF-8) hoac "" neu khong ket noi duoc may chu nao
+Func _Radio_Get($sPath)
+    Local $aServers[6] = [$g_sRadioServer, "all.api.radio-browser.info", "de1.api.radio-browser.info", "de2.api.radio-browser.info", "fi1.api.radio-browser.info", "nl1.api.radio-browser.info"]
+    Local $sCustom = IniRead($CONFIG_FILE, "Settings", "RadioServer", "")
+    If $sCustom <> "" Then $aServers[0] = $sCustom
+    Local $oOldErr = ObjEvent("AutoIt.Error", "_Radio_ComErr")
+    Local $oHTTP, $sBody, $sTried = "|"
+    For $i = 0 To UBound($aServers) - 1
+        If $aServers[$i] = "" Or StringInStr($sTried, "|" & $aServers[$i] & "|") Then ContinueLoop
+        $sTried &= $aServers[$i] & "|"
+        $oHTTP = ObjCreate("WinHttp.WinHttpRequest.5.1")
+        If Not IsObj($oHTTP) Then ExitLoop
+        $oHTTP.SetTimeouts(4000, 4000, 8000, 20000)
+        $oHTTP.Open("GET", "https://" & $aServers[$i] & $sPath, False)
+        $oHTTP.SetRequestHeader("User-Agent", "VDHMediaCenter/" & $version)
+        $oHTTP.Send()
+        If @error Then ContinueLoop
+        If $oHTTP.Status <> 200 Then ContinueLoop
+        $sBody = BinaryToString($oHTTP.ResponseBody, 4)
+        If StringLen($sBody) > 1 Then
+            $g_sRadioServer = $aServers[$i]
+            Return $sBody
+        EndIf
+    Next
+    Return ""
+EndFunc
+
+; $sKind = "countries" | "languages"  ->  mang [n][3] (ten, ma, so dai), sap xep theo ten; 0 neu loi
+Func _Radio_LoadList($sKind)
+    Local $sJson = _Radio_Get("/json/" & $sKind & "?hidebroken=true&order=name")
+    If $sJson = "" Then Return 0
+    Local $aObj = StringRegExp($sJson, '\{[^{}]*\}', 3)
+    If @error Then Return 0
+    Local $aOut[UBound($aObj)][3], $n = 0
+    Local $sName, $sCode, $iCnt
+    For $i = 0 To UBound($aObj) - 1
+        $sName = StringStripWS(StringReplace(_Json_Str($aObj[$i], "name"), "|", "/"), 7)
+        $iCnt = _Json_Num($aObj[$i], "stationcount")
+        If $sName = "" Or $iCnt <= 0 Then ContinueLoop
+        If $sKind = "countries" Then
+            $sCode = _Json_Str($aObj[$i], "iso_3166_1")
+            If $sCode = "" Then ContinueLoop
+        Else
+            $sCode = $sName
+        EndIf
+        $aOut[$n][0] = $sName
+        $aOut[$n][1] = $sCode
+        $aOut[$n][2] = $iCnt
+        $n += 1
+    Next
+    If $n = 0 Then Return 0
+    ReDim $aOut[$n][3]
+    _ArraySort($aOut, 0, 0, 0, 0)
+    Return $aOut
+EndFunc
+
+; Tra ve mang [n][5] (ten, url, codec, bitrate, tags) hoac 0 neu loi, 1x1 trong neu khong co dai nao
+Func _Radio_SearchStations($sKind, $sCode, $sName)
+    Local $sPath = "/json/stations/search?hidebroken=true&order=votes&reverse=true&limit=500"
+    If $sKind = "countries" Then
+        $sPath &= "&countrycode=" & _URLEncode($sCode)
+    Else
+        $sPath &= "&language=" & _URLEncode(StringLower($sCode)) & "&languageExact=true"
+    EndIf
+    If $sName <> "" Then $sPath &= "&name=" & _URLEncode($sName)
+    Local $sJson = _Radio_Get($sPath)
+    If $sJson = "" Then Return 0
+    Local $aObj = StringRegExp($sJson, '\{[^{}]*\}', 3)
+    Local $iRxErr = @error
+    Local $aOut[1][5]
+    If $iRxErr Then Return $aOut
+    ReDim $aOut[UBound($aObj)][5]
+    Local $n = 0, $sNm, $sUrl
+    For $i = 0 To UBound($aObj) - 1
+        $sNm = StringStripWS(StringReplace(_Json_Str($aObj[$i], "name"), "|", "/"), 7)
+        $sUrl = _Json_Str($aObj[$i], "url_resolved")
+        If $sUrl = "" Then $sUrl = _Json_Str($aObj[$i], "url")
+        If $sNm = "" Or $sUrl = "" Then ContinueLoop
+        $aOut[$n][0] = $sNm
+        $aOut[$n][1] = $sUrl
+        $aOut[$n][2] = _Json_Str($aObj[$i], "codec")
+        $aOut[$n][3] = _Json_Num($aObj[$i], "bitrate")
+        $aOut[$n][4] = _Json_Str($aObj[$i], "tags")
+        $n += 1
+    Next
+    If $n = 0 Then
+        Local $aNone[1][5]
+        Return $aNone
+    EndIf
+    ReDim $aOut[$n][5]
+    Return $aOut
+EndFunc
+
+Func _Radio_StationLabel($aSt, $i)
+    Local $s = $aSt[$i][0]
+    Local $sInfo = StringUpper($aSt[$i][2])
+    If $aSt[$i][3] > 0 Then $sInfo &= ($sInfo = "" ? "" : " ") & $aSt[$i][3] & " kbps"
+    If $sInfo <> "" Then $s &= " (" & $sInfo & ")"
+    Return $s
+EndFunc
+
+Func _Radio_Loading($sText)
+    Local $h = GUICreate(_T("Loading"), 300, 80, -1, -1, $WS_POPUP, BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW))
+    GUICtrlCreateLabel($sText, 10, 25, 280, 30, $SS_CENTER)
+    GUISetBkColor(0xFFFFFF, $h)
+    GUISetState(@SW_SHOW, $h)
+    Return $h
+EndFunc
+
+; Nghe thong tin bai dang phat (ICY NowPlaying) tu libvlc
+Func _VLC_GetNowPlaying()
+    If Not $oVLC_Player Or $hVLC_Dll = -1 Then Return ""
+    Local $aM = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_media_player_get_media", "ptr", $oVLC_Player)
+    If @error Or Not IsArray($aM) Or Not $aM[0] Then Return ""
+    Local $pMedia = $aM[0]
+    Local $sOut = ""
+    Local $aT = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_media_get_meta", "ptr", $pMedia, "int", 12) ; libvlc_meta_NowPlaying
+    If Not @error And IsArray($aT) And $aT[0] Then
+        Local $aLen = DllCall("kernel32.dll", "int", "lstrlenA", "ptr", $aT[0])
+        If Not @error And IsArray($aLen) And $aLen[0] > 0 And $aLen[0] < 4096 Then
+            Local $tBytes = DllStructCreate("byte[" & $aLen[0] & "]", $aT[0])
+            $sOut = BinaryToString(DllStructGetData($tBytes, 1), 4)
+        EndIf
+        DllCall($hVLC_Dll, "none:cdecl", "libvlc_free", "ptr", $aT[0])
+    EndIf
+    DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_release", "ptr", $pMedia)
+    Return StringStripWS($sOut, 3)
+EndFunc
+
+Func _ShowRadioPlayer()
+    If Not _VLC_Direct_Init() Then
+        MsgBox(16, _T("Error"), _T("Could not initialize libvlc.dll. Please ensure VLC DLLs are present in the lib folder."))
+        Return
+    EndIf
+    Local $aSel, $sRes
+    While True
+        $aSel = _Radio_ChooseSource()
+        If Not IsArray($aSel) Then ExitLoop
+        $sRes = _Radio_StationsWindow($aSel[0], $aSel[1], $aSel[2])
+        If $sRes <> "CHANGE" Then ExitLoop
+    WEnd
+    _RadioRec_Stop()
+    _VLC_Direct_Stop()
+    _Pan_Reset()
+EndFunc
+
+Func _Radio_FillSource($idList, ByRef $aData, ByRef $aShown, $sFilter)
+    Local $iN = IsArray($aData) ? UBound($aData) : 0
+    Local $aFix[$iN + 1]
+    Local $k = 0, $s = ""
+    For $i = 0 To $iN - 1
+        If $sFilter <> "" And StringInStr($aData[$i][0], $sFilter) = 0 Then ContinueLoop
+        $k += 1
+        $aFix[$k] = $i
+        $s &= $aData[$i][0] & " (" & _TF("{1} stations", $aData[$i][2]) & ")|"
+    Next
+    $aFix[0] = $k ; element 0 = count, items are $aFix[1..count] (indexes into $aData)
+    ReDim $aFix[$k + 1]
+    $aShown = $aFix
+    GUICtrlSetData($idList, "")
+    If $s <> "" Then GUICtrlSetData($idList, StringTrimRight($s, 1))
+EndFunc
+
+; Cua so chon quoc gia / ngon ngu. Tra ve [loai, ma, ten] hoac 0 neu nhan Cancel
+Func _Radio_ChooseSource()
+    Local $sKind = IniRead($CONFIG_FILE, "Settings", "RadioKind", "countries")
+    If $sKind <> "languages" Then $sKind = "countries"
+    Local $sLastCode = IniRead($CONFIG_FILE, "Settings", "RadioCode", "")
+
+    Local $hLoad = _Radio_Loading(_T("Loading the list of radio stations..."))
+    Local $aData = 0
+    If $sKind = "countries" Then
+        If Not IsArray($g_aRadioCountries) Or UBound($g_aRadioCountries, 0) < 2 Then $g_aRadioCountries = _Radio_LoadList("countries")
+        $aData = $g_aRadioCountries
+    Else
+        If Not IsArray($g_aRadioLanguages) Or UBound($g_aRadioLanguages, 0) < 2 Then $g_aRadioLanguages = _Radio_LoadList("languages")
+        $aData = $g_aRadioLanguages
+    EndIf
+    GUIDelete($hLoad)
+    If Not IsArray($aData) Then
+        MsgBox(48, _T("Radio Player"), _T("Cannot load the list of radio stations. Please check your internet connection."))
+        Return 0
+    EndIf
+
+    Local $hGui = GUICreate(_T("Radio Player"), 410, 470)
+    GUISetBkColor($COLOR_BLUE)
+    GUICtrlCreateLabel(_T("Browse radio stations by:"), 10, 12, 390, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $cboKind = GUICtrlCreateCombo("", 10, 35, 390, 20, $CBS_DROPDOWNLIST)
+    GUICtrlSetData(-1, _TL("Country|Language"), ($sKind = "countries") ? _T("Country") : _T("Language"))
+    GUICtrlCreateLabel(_T("Type to filter the list:"), 10, 70, 390, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $inpFilter = GUICtrlCreateInput("", 10, 93, 390, 22)
+    Local $lblList = GUICtrlCreateLabel(($sKind = "countries") ? _T("Countries (press Enter to choose):") : _T("Languages (press Enter to choose):"), 10, 128, 390, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $lst = GUICtrlCreateList("", 10, 150, 390, 235, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
+    Local $btnOK = GUICtrlCreateButton(_T("OK"), 90, 400, 100, 32, $BS_DEFPUSHBUTTON)
+    Local $btnCancel = GUICtrlCreateButton(_T("Cancel"), 220, 400, 100, 32)
+
+    Local $hDummyEnter = GUICtrlCreateDummy()
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $aAccel[2][2] = [["{ENTER}", $hDummyEnter], ["{ESC}", $hDummyEsc]]
+    GUISetAccelerators($aAccel, $hGui)
+    Local $bEnterOn = True
+
+    Local $aShown[1]
+    _Radio_FillSource($lst, $aData, $aShown, "")
+    ; preselect the last used entry
+    Local $iPre = 0
+    For $i = 1 To $aShown[0]
+        If $aData[$aShown[$i]][1] = $sLastCode Then
+            $iPre = $i - 1
+            ExitLoop
+        EndIf
+    Next
+    _GUICtrlListBox_SetCurSel($lst, $iPre)
+    GUISetState(@SW_SHOW, $hGui)
+    _AllowUIPI($hGui)
+    _AllowUIPI($inpFilter)
+    ControlFocus($hGui, "", $lst)
+
+    Local $sLastFilter = "", $nMsg, $sNow, $iIdx, $iNewKind, $aResult, $aBtns[2] = [$btnOK, $btnCancel]
+    While 1
+        _SyncEnterAccel($hGui, $aAccel, $lst, $bEnterOn)
+        $nMsg = _GuiMsg($hGui)
+        If $nMsg = $hDummyEnter Then
+            Local $iPressed = _EnterFocusedButton($hGui, $aBtns)
+            $nMsg = ($iPressed <> 0) ? $iPressed : $btnOK
+        EndIf
+
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnCancel, $hDummyEsc
+                GUIDelete($hGui)
+                Return 0
+
+            Case $cboKind
+                $iNewKind = _GUICtrlComboBox_GetCurSel($cboKind)
+                $sKind = ($iNewKind = 1) ? "languages" : "countries"
+                $hLoad = _Radio_Loading(_T("Loading the list of radio stations..."))
+                If $sKind = "countries" Then
+                    If Not IsArray($g_aRadioCountries) Or UBound($g_aRadioCountries, 0) < 2 Then $g_aRadioCountries = _Radio_LoadList("countries")
+                    $aData = $g_aRadioCountries
+                Else
+                    If Not IsArray($g_aRadioLanguages) Or UBound($g_aRadioLanguages, 0) < 2 Then $g_aRadioLanguages = _Radio_LoadList("languages")
+                    $aData = $g_aRadioLanguages
+                EndIf
+                GUIDelete($hLoad)
+                GUISwitch($hGui)
+                If Not IsArray($aData) Then
+                    MsgBox(48, _T("Radio Player"), _T("Cannot load the list of radio stations. Please check your internet connection."))
+                    $sKind = ($sKind = "countries") ? "languages" : "countries"
+                    _GUICtrlComboBox_SetCurSel($cboKind, ($sKind = "countries") ? 0 : 1)
+                    $aData = ($sKind = "countries") ? $g_aRadioCountries : $g_aRadioLanguages
+                EndIf
+                GUICtrlSetData($lblList, ($sKind = "countries") ? _T("Countries (press Enter to choose):") : _T("Languages (press Enter to choose):"))
+                GUICtrlSetData($inpFilter, "")
+                $sLastFilter = ""
+                _Radio_FillSource($lst, $aData, $aShown, "")
+                _GUICtrlListBox_SetCurSel($lst, 0)
+
+            Case $btnOK
+                $iIdx = _GUICtrlListBox_GetCurSel($lst)
+                If $iIdx >= 0 And $iIdx < $aShown[0] Then
+                    Local $aRow[3]
+                    $aRow[0] = $sKind
+                    $aRow[1] = $aData[$aShown[$iIdx + 1]][1]
+                    $aRow[2] = $aData[$aShown[$iIdx + 1]][0]
+                    IniWrite($CONFIG_FILE, "Settings", "RadioKind", $sKind)
+                    IniWrite($CONFIG_FILE, "Settings", "RadioCode", $aRow[1])
+                    GUIDelete($hGui)
+                    Return $aRow
+                EndIf
+        EndSwitch
+
+        $sNow = GUICtrlRead($inpFilter)
+        If $sNow <> $sLastFilter Then
+            $sLastFilter = $sNow
+            _Radio_FillSource($lst, $aData, $aShown, $sNow)
+            _GUICtrlListBox_SetCurSel($lst, 0)
+        EndIf
+        Sleep(10)
+    WEnd
+EndFunc
+
+; Safety net: if libvlc still managed to open its own video window (title "VLC (...output)") in THIS process,
+; hide it and give the keyboard focus back to the radio window, so volume keys / slider keep working.
+Func _Radio_HideVoutWindow($hGui)
+    Local $aWin = WinList("[REGEXPTITLE:^VLC \(.*\)$]")
+    If Not IsArray($aWin) Then Return
+    Local $bHidden = False
+    For $i = 1 To $aWin[0][0]
+        If $aWin[$i][1] = $hGui Then ContinueLoop
+        If WinGetProcess($aWin[$i][1]) <> @AutoItPID Then ContinueLoop
+        WinSetState($aWin[$i][1], "", @SW_HIDE)
+        $bHidden = True
+    Next
+    If $bHidden Then WinActivate($hGui)
+EndFunc
+
+Func _Radio_SetVolumeUI($idSlider, $iVol)
+    If $iVol > 100 Then $iVol = 100
+    If $iVol < 0 Then $iVol = 0
+    $g_iAppVolume = $iVol
+    _VLC_Direct_SetVolume($iVol)
+    If $idSlider <> 0 Then GUICtrlSetData($idSlider, $iVol)
+EndFunc
+
+; Cua so danh sach dai: tim kiem, phat (Enter), dung, ghi am, yeu thich, chep lien ket, am luong, pan, equalizer, hen gio ngu.
+; $bFavMode = True: cua so "Favorite Stations" (danh sach la cac dai yeu thich, khong co o tim kiem va nut doi quoc gia).
+; Tra ve "CHANGE" neu nguoi dung muon chon quoc gia/ngon ngu khac, "" neu dong.
+Func _Radio_StationsWindow($sKind, $sCode, $sName, $bFavMode = False)
+    Local Const $NONE = -9999 ; id of a control that does not exist in this mode (never equals a real message)
+    Local $hGui = GUICreate($bFavMode ? $sName : _TF("Radio - {1}", $sName), 480, 640)
+    GUISetBkColor($COLOR_BLUE)
+    Local $inpSearch = $NONE, $btnSearch = $NONE, $btnFav = $NONE, $btnRemove = $NONE, $btnClearFav = $NONE, $btnChange = $NONE
+    If $bFavMode Then
+        GUICtrlCreateLabel(_T("Your favorite radio stations:"), 10, 10, 460, 20)
+        GUICtrlSetColor(-1, 0xFFFFFF)
+    Else
+        GUICtrlCreateLabel(_TF("Search stations in {1} (leave empty to show the most popular):", $sName), 10, 10, 460, 20)
+        GUICtrlSetColor(-1, 0xFFFFFF)
+        $inpSearch = GUICtrlCreateInput("", 10, 32, 360, 22)
+        $btnSearch = GUICtrlCreateButton(_T("Search"), 380, 30, 90, 26)
+    EndIf
+    GUICtrlCreateLabel(_T("Stations (press Enter to play):"), 10, 66, 460, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $lst = GUICtrlCreateList("", 10, 88, 460, 220, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
+    Local $lblStatus = GUICtrlCreateLabel(_T("Stopped"), 10, 316, 460, 20, $SS_NOPREFIX)
+    GUICtrlSetColor(-1, 0xFFFF00)
+    GUICtrlSetFont(-1, 10, 800)
+    Local $lblNow = GUICtrlCreateLabel("", 10, 338, 460, 36, $SS_NOPREFIX)
+    GUICtrlSetColor(-1, 0x00FF00)
+    Local $lblRec = GUICtrlCreateLabel("", 10, 376, 460, 20, $SS_NOPREFIX)
+    GUICtrlSetColor(-1, 0xFF9090)
+
+    ; manual volume slider (Left/Right = 5, Page Up/Down = 10). The label before it names the slider for screen readers.
+    GUICtrlCreateLabel(_T("Volume:"), 10, 414, 70, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $sldVol = GUICtrlCreateSlider(85, 408, 385, 30, BitOR(0x0001, $WS_TABSTOP))
+    GUICtrlSetLimit($sldVol, 100, 0)
+    GUICtrlSendMsg($sldVol, 0x0417, 0, 5)
+    GUICtrlSendMsg($sldVol, 0x0415, 0, 10)
+    GUICtrlSetData($sldVol, $g_iAppVolume)
+
+    Local $btnPlay = GUICtrlCreateButton(_T("Play"), 10, 450, 150, 32)
+    Local $btnStop = GUICtrlCreateButton(_T("Stop (Alt+S)"), 165, 450, 150, 32)
+    Local $btnRec = GUICtrlCreateButton(_T("Record (Ctrl+R)"), 320, 450, 150, 32)
+    If $bFavMode Then
+        $btnRemove = GUICtrlCreateButton(_T("Remove selected (Delete)"), 10, 490, 150, 32)
+    Else
+        $btnFav = GUICtrlCreateButton(_T("Add to favorites (Ctrl+D)"), 10, 490, 150, 32)
+    EndIf
+    Local $btnCopy = GUICtrlCreateButton(_T("Copy link (Alt+K)"), 165, 490, 150, 32)
+    Local $btnSleep = GUICtrlCreateButton(_T("Sleep timer (Alt+T)"), 320, 490, 150, 32)
+    If $bFavMode Then
+        $btnClearFav = GUICtrlCreateButton(_T("Clear all favorites"), 10, 530, 150, 32)
+    Else
+        $btnChange = GUICtrlCreateButton(_T("Change country (Alt+G)"), 10, 530, 150, 32)
+    EndIf
+    Local $btnClose = GUICtrlCreateButton(_T("Close"), 165, 530, 150, 32)
+    GUICtrlCreateLabel($bFavMode ? _T("Ctrl+Up / Ctrl+Down: volume. Ctrl+Left / Ctrl+Right: pan. Page Up / Page Down: previous / next station. Delete: remove from favorites. Ctrl+R: record. Ctrl+I: now playing. Esc: close.") _
+            : _T("Ctrl+Up / Ctrl+Down: volume. Ctrl+Left / Ctrl+Right: pan. Page Up / Page Down: previous / next station. Ctrl+D: add to favorites. Ctrl+R: record. Ctrl+I: now playing. Esc: close."), 10, 572, 460, 60)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+
+    Local $hDummyEnter = GUICtrlCreateDummy()
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $hDummyVolUp = GUICtrlCreateDummy()
+    Local $hDummyVolDown = GUICtrlCreateDummy()
+    Local $hDummyInfo = GUICtrlCreateDummy()
+    Local $hDummyPanL = GUICtrlCreateDummy()
+    Local $hDummyPanR = GUICtrlCreateDummy()
+    Local $hDummyPgUp = GUICtrlCreateDummy()
+    Local $hDummyPgDn = GUICtrlCreateDummy()
+    Local $aAcc[16][2], $nAcc = 0
+    _Radio_AccAdd($aAcc, $nAcc, "{ENTER}", $hDummyEnter)
+    _Radio_AccAdd($aAcc, $nAcc, "{ESC}", $hDummyEsc)
+    _Radio_AccAdd($aAcc, $nAcc, "^{UP}", $hDummyVolUp)
+    _Radio_AccAdd($aAcc, $nAcc, "^{DOWN}", $hDummyVolDown)
+    _Radio_AccAdd($aAcc, $nAcc, "^{LEFT}", $hDummyPanL)
+    _Radio_AccAdd($aAcc, $nAcc, "^{RIGHT}", $hDummyPanR)
+    _Radio_AccAdd($aAcc, $nAcc, "^i", $hDummyInfo)
+    _Radio_AccAdd($aAcc, $nAcc, "^r", $btnRec)
+    _Radio_AccAdd($aAcc, $nAcc, "!s", $btnStop)
+    _Radio_AccAdd($aAcc, $nAcc, "!k", $btnCopy)
+    _Radio_AccAdd($aAcc, $nAcc, "!t", $btnSleep)
+    _Radio_AccAdd($aAcc, $nAcc, "^d", $btnFav)
+    _Radio_AccAdd($aAcc, $nAcc, "!g", $btnChange)
+    _Radio_AccAdd($aAcc, $nAcc, "{DEL}", $btnRemove)
+    _Radio_ApplyAccel($hGui, $aAcc, $nAcc, False, $hDummyPgUp, $hDummyPgDn)
+    Local $bPagingOn = False, $bWantPaging = False
+
+    Local $aSt = 0 ; stations [n][5]
+    Local $iCount = 0, $iPlaying = -1, $iPlayState = 0, $hPollTimer = TimerInit(), $hNowTimer = TimerInit(), $hRecTimer = TimerInit()
+    ; $iPlayState: 0 = stopped, 1 = connecting, 2 = playing, 3 = connection lost, waiting before the next reconnect attempt
+    Local $sPlayName = "", $sPlayUrl = "", $iRetry = 0, $iRetryDelay = 0, $iMaxRetry = 12, $hRetryTimer = 0, $hBufTimer = 0
+    Local $bReconnecting = False, $bSwitching = False, $bQuiet = False, $bDropped = False
+    Local $sLastNow = "", $iLastVol = $g_iAppVolume
+    Local $aBtns[0]
+    _Radio_IdAdd($aBtns, $btnPlay)
+    _Radio_IdAdd($aBtns, $btnStop)
+    _Radio_IdAdd($aBtns, $btnRec)
+    _Radio_IdAdd($aBtns, $btnFav)
+    _Radio_IdAdd($aBtns, $btnRemove)
+    _Radio_IdAdd($aBtns, $btnCopy)
+    _Radio_IdAdd($aBtns, $btnSleep)
+    _Radio_IdAdd($aBtns, $btnClearFav)
+    _Radio_IdAdd($aBtns, $btnChange)
+    _Radio_IdAdd($aBtns, $btnClose)
+    Local $nMsg, $iSel, $iV, $iState, $sNow, $hFocus, $sTerm, $aTmp, $iPressed, $iPlayStart = 0
+    Local $iTarget, $iStep, $iRes, $sRecFile, $sRecName, $sRecUrl, $sBatch, $hLoad
+
+    GUISetState(@SW_SHOW, $hGui)
+    _AllowUIPI($hGui)
+    If Not $bFavMode Then _AllowUIPI($inpSearch)
+
+    Local $bDoSearch = Not $bFavMode
+    If $bFavMode Then
+        _Radio_ReloadFav($lst, $aSt, $iCount, 0)
+        GUICtrlSetData($lblStatus, _TF("{1} stations found", $iCount))
+        ControlFocus($hGui, "", $lst)
+    EndIf
+
+    While 1
+        ; first load (most popular stations) and every new search
+        If $bDoSearch Then
+            $bDoSearch = False
+            $sTerm = StringStripWS(GUICtrlRead($inpSearch), 3)
+            $hLoad = _Radio_Loading(_T("Loading stations..."))
+            $aTmp = _Radio_SearchStations($sKind, $sCode, $sTerm)
+            GUIDelete($hLoad)
+            GUISwitch($hGui)
+            If Not IsArray($aTmp) Then
+                MsgBox(48, _T("Radio Player"), _T("Cannot load the list of radio stations. Please check your internet connection."))
+            ElseIf $aTmp[0][0] = "" Then
+                $aSt = 0
+                $iCount = 0
+                GUICtrlSetData($lst, "")
+                MsgBox(64, _T("Radio Player"), _T("No stations were found."))
+            Else
+                $aSt = $aTmp
+                $iCount = UBound($aSt)
+                _Radio_FillStations($lst, $aSt, $iCount)
+                _GUICtrlListBox_SetCurSel($lst, 0)
+                $iPlaying = -1
+                If $iPlayState = 0 Then GUICtrlSetData($lblStatus, _TF("{1} stations found", $iCount))
+            EndIf
+            ControlFocus($hGui, "", $lst)
+        EndIf
+
+        $nMsg = _GuiMsg($hGui)
+        If $nMsg = $hDummyEnter Then
+            $hFocus = ControlGetHandle($hGui, "", ControlGetFocus($hGui))
+            If $hFocus = GUICtrlGetHandle($lst) Then
+                $nMsg = $btnPlay
+            ElseIf Not $bFavMode And $hFocus = GUICtrlGetHandle($inpSearch) Then
+                $nMsg = $btnSearch
+            Else
+                $iPressed = _EnterFocusedButton($hGui, $aBtns)
+                If $iPressed <> 0 Then $nMsg = $iPressed
+            EndIf
+        EndIf
+
+        ; Page Up / Page Down while listening: previous / next station (wraps around), played at once
+        If $nMsg = $hDummyPgUp Or $nMsg = $hDummyPgDn Then
+            If $iCount > 1 Then
+                $iTarget = $iPlaying
+                If $iTarget < 0 Then $iTarget = _GUICtrlListBox_GetCurSel($lst)
+                If $iTarget < 0 Then $iTarget = 0
+                $iStep = 1
+                If $nMsg = $hDummyPgUp Then $iStep = -1
+                $iTarget += $iStep
+                If $iTarget >= $iCount Then $iTarget = 0
+                If $iTarget < 0 Then $iTarget = $iCount - 1
+                _GUICtrlListBox_SetCurSel($lst, $iTarget)
+                $bSwitching = True
+                $nMsg = $btnPlay
+            Else
+                $nMsg = 0
+            EndIf
+        EndIf
+
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnClose, $hDummyEsc
+                If _RadioRec_Active() Then
+                    $sRecFile = _RadioRec_Stop()
+                    If $sRecFile = "@CONVERTING" Then
+                        _NVDA_Speak(_T("Converting the recording in the background..."))
+                    ElseIf $sRecFile <> "" Then
+                        _NVDA_Speak(_TF("Recording saved: {1}", _Radio_FileName($sRecFile)))
+                    EndIf
+                EndIf
+                _VLC_Direct_Stop()
+                GUIDelete($hGui)
+                Return ""
+
+            Case $btnChange
+                If _RadioRec_Active() Then
+                    $sRecFile = _RadioRec_Stop()
+                    If $sRecFile = "@CONVERTING" Then
+                        _NVDA_Speak(_T("Converting the recording in the background..."))
+                    ElseIf $sRecFile <> "" Then
+                        _NVDA_Speak(_TF("Recording saved: {1}", _Radio_FileName($sRecFile)))
+                    EndIf
+                EndIf
+                GUIDelete($hGui)
+                Return "CHANGE"
+
+            Case $btnSearch
+                $bDoSearch = True
+
+            Case $btnPlay
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                $bQuiet = $bSwitching
+                $bSwitching = False
+                If $iSel >= 0 And $iSel < $iCount Then
+                    $iPlaying = $iSel
+                    $sPlayName = $aSt[$iSel][0]
+                    $sPlayUrl = $aSt[$iSel][1]
+                    $iPlayState = 1
+                    $bReconnecting = False
+                    $iRetry = 0
+                    $hBufTimer = 0
+                    $iPlayStart = TimerInit()
+                    $sLastNow = ""
+                    GUICtrlSetData($lblNow, "")
+                    GUICtrlSetData($lblStatus, _TF("Connecting to {1}...", $sPlayName))
+                    If $bQuiet Then
+                        _NVDA_Speak($sPlayName) ; Page Up / Page Down: just say the name of the new station
+                    Else
+                        _NVDA_Speak(_TF("Connecting to {1}...", $sPlayName))
+                    EndIf
+                    _VLC_Direct_Play($sPlayUrl, True)
+                    _VLC_Direct_SetRate(1.0)
+                    _VLC_Direct_SetVolume($g_iAppVolume)
+                    _Radio_HideVoutWindow($hGui)
+                    If Not $bQuiet Then ControlFocus($hGui, "", $lst)
+                EndIf
+
+            Case $btnStop
+                $iPlayState = 0
+                $bReconnecting = False
+                _VLC_Direct_Stop()
+                $sLastNow = ""
+                GUICtrlSetData($lblStatus, _T("Stopped"))
+                GUICtrlSetData($lblNow, "")
+                _NVDA_Speak(_T("Stopped"))
+
+            Case $btnRec
+                If _RadioRec_Active() Then
+                    $sRecFile = _RadioRec_Stop()
+                    _Radio_RecUpdateUI($btnRec, $lblRec)
+                    If $sRecFile = "@CONVERTING" Then
+                        GUICtrlSetData($lblRec, _T("Converting the recording..."))
+                        _NVDA_Speak(_T("Converting the recording..."))
+                    ElseIf $sRecFile = "" Then
+                        GUICtrlSetData($lblRec, _T("Nothing was recorded."))
+                        _NVDA_Speak(_T("Nothing was recorded."))
+                    Else
+                        GUICtrlSetData($lblRec, _TF("Recording saved: {1}", $sRecFile))
+                        _NVDA_Speak(_TF("Recording saved: {1}", _Radio_FileName($sRecFile)))
+                    EndIf
+                Else
+                    ; record the station that is playing; when nothing is playing, the one selected in the list
+                    $sRecName = ""
+                    $sRecUrl = ""
+                    If $iPlayState > 0 And $sPlayUrl <> "" Then
+                        $sRecName = $sPlayName
+                        $sRecUrl = $sPlayUrl
+                    Else
+                        $iSel = _GUICtrlListBox_GetCurSel($lst)
+                        If $iSel >= 0 And $iSel < $iCount Then
+                            $sRecName = $aSt[$iSel][0]
+                            $sRecUrl = $aSt[$iSel][1]
+                        EndIf
+                    EndIf
+                    If $sRecUrl = "" Then
+                        _NVDA_Speak(_T("Choose a station to record first."))
+                    Else
+                        $iRes = _RadioRec_Start($sRecName, $sRecUrl)
+                        If $iRes = 1 Then
+                            $hRecTimer = TimerInit()
+                            _Radio_RecUpdateUI($btnRec, $lblRec)
+                            _NVDA_Speak(_TF("Recording started: {1}", $sRecName))
+                        ElseIf $iRes = -2 Then
+                            _NVDA_Speak(_T("The recording folder cannot be created. Please choose another folder in Settings > Radio."))
+                        Else
+                            _NVDA_Speak(_T("Could not start the recording."))
+                        EndIf
+                    EndIf
+                EndIf
+
+            Case $btnFav
+                ; add the station selected in the list (or the one playing) to the favorites
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                If $iSel < 0 Or $iSel >= $iCount Then $iSel = $iPlaying
+                If $iSel >= 0 And $iSel < $iCount Then
+                    $iRes = _RadioFav_Add($aSt[$iSel][0], $aSt[$iSel][1], $aSt[$iSel][2], $aSt[$iSel][3])
+                    If $iRes = 1 Then
+                        _NVDA_Speak(_TF("Added to favorites: {1}", $aSt[$iSel][0]))
+                    ElseIf $iRes = 0 Then
+                        _NVDA_Speak(_TF("Already in favorites: {1}", $aSt[$iSel][0]))
+                    Else
+                        _NVDA_Speak(_T("Could not save the favorite station."))
+                    EndIf
+                EndIf
+
+            Case $btnRemove
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                If $iSel >= 0 And $iSel < $iCount Then
+                    $sRecName = $aSt[$iSel][0]
+                    If _RadioFav_RemoveAt($iSel) Then
+                        $iPlaying = -1
+                        _Radio_ReloadFav($lst, $aSt, $iCount, $iSel)
+                        If $iPlayState = 0 Then GUICtrlSetData($lblStatus, _TF("{1} stations found", $iCount))
+                        _NVDA_Speak(_TF("Removed from favorites: {1}", $sRecName))
+                    EndIf
+                EndIf
+                ControlFocus($hGui, "", $lst)
+
+            Case $btnClearFav
+                If $iCount > 0 Then
+                    If MsgBox(36, _T("Confirm"), _T("Are you sure you want to remove all favorite stations?"), 0, $hGui) = 6 Then
+                        _RadioFav_Clear()
+                        $iPlaying = -1
+                        _Radio_ReloadFav($lst, $aSt, $iCount, 0)
+                        If $iPlayState = 0 Then GUICtrlSetData($lblStatus, _TF("{1} stations found", $iCount))
+                        _NVDA_Speak(_T("All favorite stations were removed."))
+                    EndIf
+                EndIf
+                ControlFocus($hGui, "", $lst)
+
+            Case $btnCopy
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                If $iSel >= 0 And $iSel < $iCount Then
+                    ClipPut($aSt[$iSel][1])
+                    _NVDA_Speak(_T("Link copied to clipboard"))
+                ElseIf $sPlayUrl <> "" Then
+                    ClipPut($sPlayUrl)
+                    _NVDA_Speak(_T("Link copied to clipboard"))
+                EndIf
+
+            Case $btnSleep
+                _ShowSleepTimerDialog($hGui)
+                GUISwitch($hGui)
+                ControlFocus($hGui, "", $btnSleep)
+
+            Case $hDummyVolUp
+                _Radio_SetVolumeUI($sldVol, GUICtrlRead($sldVol) + 5)
+                $iLastVol = $g_iAppVolume
+                _NVDA_Speak(_TF("Volume: {1}%", $g_iAppVolume))
+
+            Case $hDummyVolDown
+                _Radio_SetVolumeUI($sldVol, GUICtrlRead($sldVol) - 5)
+                $iLastVol = $g_iAppVolume
+                _NVDA_Speak(_TF("Volume: {1}%", $g_iAppVolume))
+
+            Case $hDummyPanL
+                _StepPan(-1)
+
+            Case $hDummyPanR
+                _StepPan(1)
+
+            Case $hDummyInfo
+                $sNow = _VLC_GetNowPlaying()
+                If $iPlayState = 0 Then
+                    _NVDA_Speak(_T("Stopped"))
+                ElseIf $sNow <> "" Then
+                    _NVDA_Speak(_TF("Now playing: {1}", $sNow))
+                ElseIf $sPlayName <> "" Then
+                    _NVDA_Speak(_TF("Playing: {1}", $sPlayName))
+                EndIf
+        EndSwitch
+
+        ; slider moved by the user
+        $iV = GUICtrlRead($sldVol)
+        If $iV <> $iLastVol Then
+            $iLastVol = $iV
+            $g_iAppVolume = $iV
+            _VLC_Direct_SetVolume($iV)
+        EndIf
+
+        ; playback state / reconnect / now playing (twice a second)
+        If $iPlayState > 0 And TimerDiff($hPollTimer) >= 500 Then
+            $hPollTimer = TimerInit()
+            _Radio_HideVoutWindow($hGui)
+            $iState = _VLC_Direct_GetState()
+            _VLC_StereoMode_Retry()
+            If $g_iPanStep <> 0 Or $g_bAutoPan Or _StereoModeUsesSession() Then _Pan_Sync()
+            Switch $iPlayState
+                Case 1 ; connecting (or reconnecting)
+                    If $iState = 3 Then
+                        $iPlayState = 2
+                        $hBufTimer = 0
+                        _VLC_Direct_SetVolume($g_iAppVolume)
+                        If $bReconnecting Then
+                            GUICtrlSetData($lblStatus, _TF("Playing: {1}", $sPlayName))
+                            _NVDA_Speak(_TF("Reconnected to {1}", $sPlayName))
+                        Else
+                            GUICtrlSetData($lblStatus, _TF("Playing: {1}", $sPlayName))
+                            _NVDA_Speak(_TF("Playing: {1}", $sPlayName))
+                        EndIf
+                        $bReconnecting = False
+                        $iRetry = 0
+                    ElseIf $iState = 7 Or ($iState >= 5 And TimerDiff($iPlayStart) > 4000) Or TimerDiff($iPlayStart) > 30000 Then
+                        _VLC_Direct_Stop()
+                        If $bReconnecting And $iRetry < $iMaxRetry Then
+                            ; this reconnect attempt failed: wait a little longer, then try again
+                            $iPlayState = 3
+                            $iRetryDelay = 2000 * $iRetry
+                            If $iRetryDelay > 10000 Then $iRetryDelay = 10000
+                            $hRetryTimer = TimerInit()
+                        Else
+                            $iPlayState = 0
+                            $bReconnecting = False
+                            If $iRetry > 0 Then
+                                GUICtrlSetData($lblStatus, _T("The connection could not be restored."))
+                                _NVDA_Speak(_T("The connection could not be restored."))
+                            Else
+                                GUICtrlSetData($lblStatus, _T("Cannot play this station."))
+                                _NVDA_Speak(_T("Cannot play this station."))
+                            EndIf
+                        EndIf
+                    EndIf
+
+                Case 2 ; playing: watch for a dropped connection
+                    $bDropped = False
+                    If $iState = 7 Or $iState = 6 Or $iState = 5 Then
+                        $bDropped = True
+                    ElseIf $iState = 2 Then
+                        If $hBufTimer = 0 Then $hBufTimer = TimerInit()
+                        If TimerDiff($hBufTimer) > 20000 Then $bDropped = True ; buffering for too long = network is gone
+                    Else
+                        $hBufTimer = 0
+                    EndIf
+                    If $bDropped Then
+                        $hBufTimer = 0
+                        $iRetry = 0
+                        $iPlayState = 3
+                        $iRetryDelay = 1000
+                        $hRetryTimer = TimerInit()
+                        GUICtrlSetData($lblStatus, _T("Connection lost. Reconnecting..."))
+                        GUICtrlSetData($lblNow, "")
+                        $sLastNow = ""
+                        _NVDA_Speak(_T("Connection lost. Reconnecting..."))
+                    ElseIf TimerDiff($hNowTimer) >= 4000 Then
+                        $hNowTimer = TimerInit()
+                        $sNow = _VLC_GetNowPlaying()
+                        If $sNow <> $sLastNow Then
+                            $sLastNow = $sNow
+                            GUICtrlSetData($lblNow, ($sNow <> "") ? _TF("Now playing: {1}", $sNow) : "")
+                        EndIf
+                    EndIf
+
+                Case 3 ; waiting, then reconnect
+                    If TimerDiff($hRetryTimer) >= $iRetryDelay Then
+                        $iRetry += 1
+                        $bReconnecting = True
+                        $iPlayState = 1
+                        $iPlayStart = TimerInit()
+                        GUICtrlSetData($lblStatus, _TF("Reconnecting to {1} (attempt {2} of {3})...", $sPlayName, $iRetry, $iMaxRetry))
+                        _VLC_Direct_Play($sPlayUrl, True)
+                        _VLC_Direct_SetRate(1.0)
+                        _VLC_Direct_SetVolume($g_iAppVolume)
+                    EndIf
+            EndSwitch
+        EndIf
+
+        ; the recording ended by itself (automatic stop time reached, the station ended the stream)
+        If TimerDiff($hRecTimer) >= 1000 Then
+            $hRecTimer = TimerInit()
+            If $g_iRecConvN > 0 Then _RadioRec_ConvPoll($lblRec)
+            If _RadioRec_Active() Then
+                If Not _RadioRec_Alive() Then
+                    $sRecFile = _RadioRec_Stop()
+                    _Radio_RecUpdateUI($btnRec, $lblRec)
+                    If $sRecFile = "@CONVERTING" Then
+                        GUICtrlSetData($lblRec, _T("Converting the recording..."))
+                        _NVDA_Speak(_T("Converting the recording..."))
+                    ElseIf $sRecFile = "" Then
+                        GUICtrlSetData($lblRec, _RadioRec_FailText())
+                        _NVDA_Speak(_RadioRec_FailText())
+                    Else
+                        GUICtrlSetData($lblRec, _TF("Recording saved: {1}", $sRecFile))
+                        _NVDA_Speak(_TF("Recording finished: {1}", _Radio_FileName($sRecFile)))
+                    EndIf
+                EndIf
+            EndIf
+        EndIf
+
+        _SleepTimer_Tick() ; sleep timer (with the optional fade-out) also works in the radio
+        If $g_bAutoPan Then _AutoPan_Tick(_VLC_Direct_GetState())
+
+        ; Page Up / Page Down switch stations only while a station is playing or connecting
+        $bWantPaging = ($iPlayState > 0)
+        If $bWantPaging <> $bPagingOn Then
+            $bPagingOn = $bWantPaging
+            _Radio_ApplyAccel($hGui, $aAcc, $nAcc, $bPagingOn, $hDummyPgUp, $hDummyPgDn)
+        EndIf
+        Sleep(10)
+    WEnd
+EndFunc
+
+; ======================================================================
+;  PHIM TAT TUY CHINH (Settings > Shortcuts)
+;  Moi hanh dong co mot ID, phim mac dinh va phim hien tai (luu trong settings.ini muc [Hotkeys]).
+;  Gia tri "none" = tat phim. Bang phim tat cua cua so duoc ghep tu danh sach nay.
+; ======================================================================
+Func _HK_Reg($sId, $sScope, $sDefault, $sLabel, $sTextKey = "")
+    Local $i = $g_iHKCount
+    $g_aHK[$i][0] = $sId
+    $g_aHK[$i][1] = $sScope
+    $g_aHK[$i][2] = $sDefault
+    $g_aHK[$i][3] = IniRead($CONFIG_FILE, "Hotkeys", $sId, $sDefault)
+    If $g_aHK[$i][3] = "" Then $g_aHK[$i][3] = $sDefault
+    $g_aHK[$i][4] = $sLabel
+    $g_aHK[$i][5] = 0
+    $g_aHK[$i][6] = 0
+    $g_aHK[$i][7] = $sTextKey
+    $g_iHKCount += 1
+EndFunc
+
+Func _HK_Index($sId)
+    For $i = 0 To $g_iHKCount - 1
+        If $g_aHK[$i][0] = $sId Then Return $i
+    Next
+    Return -1
+EndFunc
+
+Func _HK_SetHandle($sId, $h, $idText = 0)
+    Local $i = _HK_Index($sId)
+    If $i < 0 Then Return
+    $g_aHK[$i][5] = $h
+    $g_aHK[$i][6] = $idText
+EndFunc
+
+Func _HK_Key($sId)
+    Local $i = _HK_Index($sId)
+    If $i < 0 Then Return ""
+    If $g_aHK[$i][3] = "none" Then Return ""
+    Return $g_aHK[$i][3]
+EndFunc
+
+Func _HK_IsCustom($sId)
+    Local $i = _HK_Index($sId)
+    If $i < 0 Then Return False
+    Return ($g_aHK[$i][3] <> $g_aHK[$i][2])
+EndFunc
+
+; Ghep bang phim tat: cac phim co dinh $aFixed + cac phim tuy chinh cua $sScope
+Func _HK_BuildTable($sScope, $aFixed)
+    Local $iFixed = UBound($aFixed)
+    Local $aOut[$g_iHKCount + $iFixed][2], $n = 0
+    For $i = 0 To $iFixed - 1
+        $aOut[$n][0] = $aFixed[$i][0]
+        $aOut[$n][1] = $aFixed[$i][1]
+        $n += 1
+    Next
+    For $i = 0 To $g_iHKCount - 1
+        If $g_aHK[$i][1] <> $sScope Then ContinueLoop
+        If $g_aHK[$i][3] = "none" Or $g_aHK[$i][5] = 0 Then ContinueLoop
+        $aOut[$n][0] = $g_aHK[$i][3]
+        $aOut[$n][1] = $g_aHK[$i][5]
+        $n += 1
+    Next
+    ReDim $aOut[$n][2]
+    Return $aOut
+EndFunc
+
+; Ten phim de doc: "^+t" -> "Ctrl+Shift+T"
+Func _HK_Display($sKey)
+    If $sKey = "" Or $sKey = "none" Then Return _T("None")
+    Local $s = "", $c
+    While StringLen($sKey) > 1
+        $c = StringLeft($sKey, 1)
+        If $c = "^" Then
+            $s &= "Ctrl+"
+        ElseIf $c = "!" Then
+            $s &= "Alt+"
+        ElseIf $c = "+" Then
+            $s &= "Shift+"
+        ElseIf $c = "#" Then
+            $s &= "Win+"
+        Else
+            ExitLoop
+        EndIf
+        $sKey = StringTrimLeft($sKey, 1)
+    WEnd
+    If StringLen($sKey) > 2 And StringLeft($sKey, 1) = "{" And StringRight($sKey, 1) = "}" Then
+        Local $sName = StringMid($sKey, 2, StringLen($sKey) - 2)
+        Switch StringUpper($sName)
+            Case "SPACE"
+                Return $s & "Space"
+            Case "ESC"
+                Return $s & "Esc"
+            Case "PGUP"
+                Return $s & "Page Up"
+            Case "PGDN"
+                Return $s & "Page Down"
+            Case "INS"
+                Return $s & "Insert"
+            Case "DEL"
+                Return $s & "Delete"
+            Case "BS"
+                Return $s & "Backspace"
+            Case "APPSKEY"
+                Return $s & "Applications"
+        EndSwitch
+        If StringRegExp($sName, "^(?i)F\d+$") Then Return $s & StringUpper($sName)
+        Return $s & StringUpper(StringLeft($sName, 1)) & StringLower(StringMid($sName, 2))
+    EndIf
+    If StringLen($sKey) = 3 And StringLeft($sKey, 1) = "{" And StringRight($sKey, 1) = "}" Then $sKey = StringMid($sKey, 2, 1)
+    Return $s & StringUpper($sKey)
+EndFunc
+
+; Thay phan "(Alt+D)" o cuoi mot dong chu bang phim hien tai (chi khi phim da bi doi)
+Func _HK_FixText($sText, $sId)
+    If Not _HK_IsCustom($sId) Then Return $sText
+    Local $sKey = _HK_Key($sId)
+    Local $sBase = StringRegExpReplace($sText, "\s*\([^()]*\)\s*$", "")
+    If $sKey = "" Then Return $sBase
+    Return $sBase & " (" & _HK_Display($sKey) & ")"
+EndFunc
+
+; Ten hanh dong de hien trong danh sach
+Func _HK_ActionLabel($i)
+    If $g_aHK[$i][7] <> "" Then Return StringRegExpReplace(_T($g_aHK[$i][7]), "\s*\([^()]*\)\s*$", "")
+    Return _T($g_aHK[$i][4])
+EndFunc
+
+; Dong tro giup trong player: thay phan phim phia truoc dau ": " neu co phim bi doi
+Func _HKL($sLineKey, $sIds)
+    Local $s = _T($sLineKey)
+    Local $aIds = StringSplit($sIds, "|", 2)
+    Local $bAny = False
+    For $i = 0 To UBound($aIds) - 1
+        If _HK_IsCustom($aIds[$i]) Then $bAny = True
+    Next
+    If Not $bAny Then Return $s
+    Local $iPos = StringInStr($s, ": ")
+    If $iPos = 0 Then Return $s
+    Local $sKeys = "", $sK
+    For $i = 0 To UBound($aIds) - 1
+        $sK = _HK_Key($aIds[$i])
+        If $sK = "" Then ContinueLoop
+        $sKeys &= (($sKeys = "") ? "" : " / ") & _HK_Display($sK)
+    Next
+    If $sKeys = "" Then Return StringMid($s, $iPos + 2)
+    Return $sKeys & StringMid($s, $iPos)
+EndFunc
+
+; Cap nhat bang phim tat va chu tren cac nut cua cua so chinh
+Func _HK_ApplyMain()
+    If Not IsHWnd($mainform) Then Return
+    Local $a = _HK_BuildTable("main", $g_aHKFixedMain)
+    GUISetAccelerators($a, $mainform)
+    For $i = 0 To $g_iHKCount - 1
+        If $g_aHK[$i][1] = "main" And $g_aHK[$i][6] <> 0 And $g_aHK[$i][7] <> "" Then
+            GUICtrlSetData($g_aHK[$i][6], _HK_FixText(_T($g_aHK[$i][7]), $g_aHK[$i][0]))
+        EndIf
+    Next
+EndFunc
+
+Func _HK_IsReserved($sScope, $sKey)
+    Local $s = StringLower($sKey)
+    If $sScope = "player" Then
+        If StringRegExp($s, "^[1-9]$") Or $s = "{appskey}" Or $s = "+{f10}" Then Return True
+    Else
+        If $s = "{enter}" Or $s = "{esc}" Then Return True
+    EndIf
+    Return False
+EndFunc
+
+; ---------- Ban lam viec cua tab Shortcuts trong Settings ----------
+Func _HK_WorkInit()
+    For $i = 0 To $g_iHKCount - 1
+        $g_aHKWork[$i] = $g_aHK[$i][3]
+    Next
+EndFunc
+
+Func _HK_CommitWork()
+    For $i = 0 To $g_iHKCount - 1
+        $g_aHK[$i][3] = $g_aHKWork[$i]
+        If $g_aHK[$i][3] = $g_aHK[$i][2] Then
+            IniDelete($CONFIG_FILE, "Hotkeys", $g_aHK[$i][0])
+        Else
+            IniWrite($CONFIG_FILE, "Hotkeys", $g_aHK[$i][0], $g_aHK[$i][3])
+        EndIf
+    Next
+    _HK_ApplyMain()
+EndFunc
+
+; Dien danh sach phim tat cua pham vi $iScope (0 = cua so chinh, 1 = player) vao listbox
+Func _HK_FillList($idList, $iScope, $iSel = 0)
+    Local $sScope = ($iScope = 1) ? "player" : "main"
+    Local $s = "", $n = 0
+    ReDim $g_aHKListIdx[$g_iHKCount + 1]
+    For $i = 0 To $g_iHKCount - 1
+        If $g_aHK[$i][1] <> $sScope Then ContinueLoop
+        $g_aHKListIdx[$n] = $i
+        $n += 1
+        $s &= _HK_ActionLabel($i) & ": " & _HK_Display($g_aHKWork[$i]) & "|"
+    Next
+    GUICtrlSetData($idList, "")
+    If $s <> "" Then GUICtrlSetData($idList, StringTrimRight($s, 1))
+    If $iSel >= $n Then $iSel = $n - 1
+    If $iSel < 0 Then $iSel = 0
+    _GUICtrlListBox_SetCurSel($idList, $iSel)
+EndFunc
+
+; Gan phim moi cho mot hanh dong (tren ban lam viec); hoi neu trung voi hanh dong khac
+Func _HK_TryAssign($iIdx, $sNew, $hParent)
+    Local $sScope = $g_aHK[$iIdx][1]
+    If $sNew <> "none" And _HK_IsReserved($sScope, $sNew) Then
+        MsgBox(48, _T("Shortcuts"), _TF("The shortcut {1} is reserved and cannot be used.", _HK_Display($sNew)), 0, $hParent)
+        Return False
+    EndIf
+    If $sNew <> "none" Then
+        For $j = 0 To $g_iHKCount - 1
+            If $j = $iIdx Or $g_aHK[$j][1] <> $sScope Then ContinueLoop
+            If StringLower($g_aHKWork[$j]) = StringLower($sNew) Then
+                If MsgBox(36, _T("Shortcuts"), _TF("The shortcut {1} is already used by ""{2}"". Move it to this action?", _HK_Display($sNew), _HK_ActionLabel($j)), 0, $hParent) <> 6 Then Return False
+                $g_aHKWork[$j] = "none"
+            EndIf
+        Next
+    EndIf
+    $g_aHKWork[$iIdx] = $sNew
+    Return True
+EndFunc
+
+; ---------- Bat phim khi nguoi dung nhan to hop phim ----------
+Func _HK_VkDown($vk)
+    Local $a = DllCall("user32.dll", "short", "GetAsyncKeyState", "int", $vk)
+    If @error Or Not IsArray($a) Then Return False
+    Return (BitAND($a[0], 0x8000) <> 0)
+EndFunc
+
+Func _HK_PressedKey()
+    For $vk = 0x08 To 0xDE
+        If $vk = 0x10 Or $vk = 0x11 Or $vk = 0x12 Or $vk = 0x14 Or $vk = 0x5B Or $vk = 0x5C Then ContinueLoop
+        If $vk >= 0xA0 And $vk <= 0xA5 Then ContinueLoop
+        If $vk = 0x90 Or $vk = 0x91 Or $vk = 0x5D Then ContinueLoop
+        If _HK_VkDown($vk) Then Return $vk
+    Next
+    Return 0
+EndFunc
+
+Func _HK_VkToToken($vk)
+    If $vk >= 0x41 And $vk <= 0x5A Then Return StringLower(Chr($vk))
+    If $vk >= 0x30 And $vk <= 0x39 Then Return Chr($vk)
+    If $vk >= 0x70 And $vk <= 0x87 Then Return "{F" & ($vk - 0x6F) & "}"
+    If $vk >= 0x60 And $vk <= 0x69 Then Return "{NUMPAD" & ($vk - 0x60) & "}"
+    Switch $vk
+        Case 0x20
+            Return "{SPACE}"
+        Case 0x25
+            Return "{LEFT}"
+        Case 0x26
+            Return "{UP}"
+        Case 0x27
+            Return "{RIGHT}"
+        Case 0x28
+            Return "{DOWN}"
+        Case 0x24
+            Return "{HOME}"
+        Case 0x23
+            Return "{END}"
+        Case 0x21
+            Return "{PGUP}"
+        Case 0x22
+            Return "{PGDN}"
+        Case 0x2D
+            Return "{INS}"
+        Case 0x2E
+            Return "{DEL}"
+        Case 0x09
+            Return "{TAB}"
+        Case 0x0D
+            Return "{ENTER}"
+        Case 0x08
+            Return "{BS}"
+        Case 0xBA
+            Return ";"
+        Case 0xBB
+            Return "="
+        Case 0xBC
+            Return ","
+        Case 0xBD
+            Return "-"
+        Case 0xBE
+            Return "."
+        Case 0xBF
+            Return "/"
+        Case 0xC0
+            Return "`"
+        Case 0xDB
+            Return "{[}"
+        Case 0xDC
+            Return "\"
+        Case 0xDD
+            Return "{]}"
+        Case 0xDE
+            Return "'"
+    EndSwitch
+    Return ""
+EndFunc
+
+; Mo hop thoi nho "Bam to hop phim..."; tra ve chuoi phim (vd "^+t") hoac "" neu huy (Esc)
+Func _HK_Capture($hParent)
+    Local $hGui = GUICreate(_T("Press a shortcut"), 380, 120, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU, $WS_POPUP), $WS_EX_TOPMOST, $hParent)
+    GUISetBkColor($COLOR_BLUE)
+    GUICtrlCreateLabel(_T("Press the key combination you want to use now. Press Esc to cancel."), 10, 15, 360, 60)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    GUISetState(@SW_SHOW, $hGui)
+    _NVDA_Speak(_T("Press the key combination you want to use now. Press Esc to cancel."))
+    Local $iT = TimerInit()
+    While _HK_PressedKey() <> 0 And TimerDiff($iT) < 3000 ; wait until the key that opened this box is released
+        GUIGetMsg()
+        Sleep(20)
+    WEnd
+    Local $sResult = "", $iVk, $sTok, $nMsg
+    While True
+        $nMsg = GUIGetMsg()
+        If $nMsg = $GUI_EVENT_CLOSE Then ExitLoop
+        $iVk = _HK_PressedKey()
+        If $iVk = 0x1B Then ExitLoop
+        If $iVk <> 0 Then
+            $sTok = _HK_VkToToken($iVk)
+            If $sTok <> "" Then
+                $sResult = _HK_Compose(_HK_VkDown(0x11), _HK_VkDown(0x12), _HK_VkDown(0x10), $sTok)
+                ExitLoop
+            EndIf
+        EndIf
+        Sleep(15)
+    WEnd
+    GUIDelete($hGui)
+    $iT = TimerInit()
+    While _HK_PressedKey() <> 0 And TimerDiff($iT) < 2000
+        Sleep(20)
+    WEnd
+    Return $sResult
+EndFunc
+
+Func _HK_Compose($bCtrl, $bAlt, $bShift, $sTok)
+    Return ($bCtrl ? "^" : "") & ($bAlt ? "!" : "") & ($bShift ? "+" : "") & $sTok
+EndFunc
+
+; Bang cac phim chon thu cong: [n][2] = (ten hien thi, token)
+Func _HK_KeyTable()
+    Local $aT[120][2], $n = 0
+    For $c = 65 To 90
+        $aT[$n][0] = Chr($c)
+        $aT[$n][1] = StringLower(Chr($c))
+        $n += 1
+    Next
+    For $c = 48 To 57
+        $aT[$n][0] = Chr($c)
+        $aT[$n][1] = Chr($c)
+        $n += 1
+    Next
+    For $c = 1 To 12
+        $aT[$n][0] = "F" & $c
+        $aT[$n][1] = "{F" & $c & "}"
+        $n += 1
+    Next
+    Local $aN = ["Left", "Right", "Up", "Down", "Home", "End", "Page Up", "Page Down", "Insert", "Delete", "Space", "Tab", "Enter", "Backspace", "Esc"]
+    Local $aK = ["{LEFT}", "{RIGHT}", "{UP}", "{DOWN}", "{HOME}", "{END}", "{PGUP}", "{PGDN}", "{INS}", "{DEL}", "{SPACE}", "{TAB}", "{ENTER}", "{BS}", "{ESC}"]
+    For $i = 0 To UBound($aN) - 1
+        $aT[$n][0] = $aN[$i]
+        $aT[$n][1] = $aK[$i]
+        $n += 1
+    Next
+    Local $aP = [";", "=", ",", "-", ".", "/", "[", "]", "\", "'", "`"]
+    Local $aPK = [";", "=", ",", "-", ".", "/", "{[}", "{]}", "\", "'", "`"]
+    For $i = 0 To UBound($aP) - 1
+        $aT[$n][0] = $aP[$i]
+        $aT[$n][1] = $aPK[$i]
+        $n += 1
+    Next
+    ReDim $aT[$n][2]
+    Return $aT
+EndFunc
+
+; Hop thoai doi phim cho mot hanh dong. Tra ve chuoi phim moi, "none" (go bo) hoac "" (huy)
+Func _HK_EditDialog($iIdx, $hParent)
+    Local $aKeys = _HK_KeyTable()
+    Local $sCur = $g_aHKWork[$iIdx]
+    Local $hGui = GUICreate(_T("Change shortcut"), 400, 300, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU, $WS_POPUP), -1, $hParent)
+    GUISetBkColor($COLOR_BLUE)
+    GUICtrlCreateLabel(_TF("Action: {1}", _HK_ActionLabel($iIdx)), 10, 12, 380, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    GUICtrlSetFont(-1, 10, 800)
+    Local $lblCur = GUICtrlCreateLabel(_TF("Current shortcut: {1}", _HK_Display($sCur)), 10, 38, 380, 20)
+    GUICtrlSetColor(-1, 0xFFFF00)
+    Local $btnCap = GUICtrlCreateButton(_T("Press keys to set..."), 10, 66, 380, 32)
+    GUICtrlCreateLabel(_T("Or choose the keys yourself:"), 10, 108, 380, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $chkCtrl = GUICtrlCreateCheckbox(_T("Ctrl"), 10, 132, 60, 22)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $chkAlt = GUICtrlCreateCheckbox(_T("Alt"), 80, 132, 60, 22)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $chkShift = GUICtrlCreateCheckbox(_T("Shift"), 150, 132, 70, 22)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    GUICtrlCreateLabel(_T("Key:"), 230, 135, 40, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $cboKey = GUICtrlCreateCombo("", 270, 130, 120, 20, $CBS_DROPDOWNLIST)
+    Local $sKeyList = ""
+    For $i = 0 To UBound($aKeys) - 1
+        $sKeyList &= $aKeys[$i][0] & "|"
+    Next
+    GUICtrlSetData($cboKey, StringTrimRight($sKeyList, 1))
+    ; preselect from the current shortcut
+    Local $sRest = ($sCur = "none") ? "" : $sCur
+    While StringLen($sRest) > 1 And StringInStr("^!+", StringLeft($sRest, 1))
+        Switch StringLeft($sRest, 1)
+            Case "^"
+                GUICtrlSetState($chkCtrl, $GUI_CHECKED)
+            Case "!"
+                GUICtrlSetState($chkAlt, $GUI_CHECKED)
+            Case "+"
+                GUICtrlSetState($chkShift, $GUI_CHECKED)
+        EndSwitch
+        $sRest = StringTrimLeft($sRest, 1)
+    WEnd
+    Local $iKeySel = 0
+    For $i = 0 To UBound($aKeys) - 1
+        If StringLower($aKeys[$i][1]) = StringLower($sRest) Then
+            $iKeySel = $i
+            ExitLoop
+        EndIf
+    Next
+    _GUICtrlComboBox_SetCurSel($cboKey, $iKeySel)
+
+    Local $btnOK = GUICtrlCreateButton(_T("OK"), 10, 180, 120, 32, $BS_DEFPUSHBUTTON)
+    Local $btnRemove = GUICtrlCreateButton(_T("Remove shortcut"), 140, 180, 120, 32)
+    Local $btnCancel = GUICtrlCreateButton(_T("Cancel"), 270, 180, 120, 32)
+    GUICtrlCreateLabel(_T("A shortcut with no Ctrl or Alt, such as a single letter, works only when the window has no text box."), 10, 225, 380, 50)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $aAccel[1][2] = [["{ESC}", $hDummyEsc]]
+    GUISetAccelerators($aAccel, $hGui)
+    GUISetState(@SW_SHOW, $hGui)
+    _AllowUIPI($hGui)
+    ControlFocus($hGui, "", $btnCap)
+
+    Local $sResult = "", $nMsg, $sCap, $iSel
+    While True
+        $nMsg = _GuiMsg($hGui)
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnCancel, $hDummyEsc
+                ExitLoop
+
+            Case $btnCap
+                $sCap = _HK_Capture($hGui)
+                If $sCap <> "" Then
+                    $sResult = $sCap
+                    ExitLoop
+                EndIf
+                GUISwitch($hGui)
+                ControlFocus($hGui, "", $btnCap)
+
+            Case $btnRemove
+                $sResult = "none"
+                ExitLoop
+
+            Case $btnOK
+                $iSel = _GUICtrlComboBox_GetCurSel($cboKey)
+                If $iSel >= 0 Then
+                    $sResult = _HK_Compose(GUICtrlRead($chkCtrl) = $GUI_CHECKED, GUICtrlRead($chkAlt) = $GUI_CHECKED, GUICtrlRead($chkShift) = $GUI_CHECKED, $aKeys[$iSel][1])
+                    ExitLoop
+                EndIf
+        EndSwitch
+        Sleep(10)
+    WEnd
+    GUIDelete($hGui)
+    Return $sResult
+EndFunc
+
+Func _HK_Init()
+    _HK_Reg("play_pause", "player", "{SPACE}", "Play / Pause")
+    _HK_Reg("seek_back", "player", "{LEFT}", "Rewind")
+    _HK_Reg("seek_fwd", "player", "{RIGHT}", "Forward")
+    _HK_Reg("seek_back_1m", "player", "!{LEFT}", "Rewind 1 minute")
+    _HK_Reg("seek_fwd_1m", "player", "!{RIGHT}", "Forward 1 minute")
+    _HK_Reg("vol_up", "player", "{UP}", "Volume up")
+    _HK_Reg("vol_down", "player", "{DOWN}", "Volume down")
+    _HK_Reg("pan_left", "player", "^{LEFT}", "Pan audio left")
+    _HK_Reg("pan_right", "player", "^{RIGHT}", "Pan audio right")
+    _HK_Reg("restart", "player", "{HOME}", "Restart from the beginning")
+    _HK_Reg("near_end", "player", "{END}", "Jump near the end")
+    _HK_Reg("slower", "player", "s", "Slower")
+    _HK_Reg("normal_speed", "player", "d", "Normal speed")
+    _HK_Reg("faster", "player", "f", "Faster")
+    _HK_Reg("step_shorter", "player", "-", "Shorter seek step")
+    _HK_Reg("step_longer", "player", "=", "Longer seek step")
+    _HK_Reg("show_percent", "player", "p", "Show percentage played")
+    _HK_Reg("goto_time", "player", "^g", "Go to a specific time")
+    _HK_Reg("lyrics", "player", "^!l", "View lyrics")
+    _HK_Reg("copy_title", "player", "c", "Copy the track title")
+    _HK_Reg("eq_dialog", "player", "^e", "Open the equalizer")
+    _HK_Reg("file_info", "player", "i", "Show file information")
+    _HK_Reg("next", "player", "n", "Next file / Auto-play on or off")
+    _HK_Reg("prev", "player", "b", "Previous file")
+    _HK_Reg("first_file", "player", "^{HOME}", "First file")
+    _HK_Reg("last_file", "player", "^{END}", "Last file")
+    _HK_Reg("elapsed", "player", "^t", "Elapsed time")
+    _HK_Reg("total", "player", "^+t", "Total duration")
+    _HK_Reg("remaining", "player", "^r", "Remaining time")
+    _HK_Reg("repeat", "player", "r", "Turn repeat on or off")
+    _HK_Reg("copy_link", "player", "^k", "Copy video link")
+    _HK_Reg("copy_link_time", "player", "^c", "Copy video link at the current time")
+    _HK_Reg("sel_start", "player", "{[}", "Set selection start")
+    _HK_Reg("sel_end", "player", "{]}", "Set selection end")
+    _HK_Reg("save_sel", "player", "^s", "Save the selection")
+    _HK_Reg("open_browser", "player", "!b", "Open in browser")
+    _HK_Reg("goto_channel", "player", "!g", "Go to channel")
+    _HK_Reg("description", "player", "^+d", "Video description")
+    _HK_Reg("comments", "player", "^+c", "Video comments")
+    _HK_Reg("transcript", "player", "^!t", "Video transcript")
+    _HK_Reg("queue_add", "player", "^q", "Add to play queue")
+    _HK_Reg("queue_open", "player", "^+q", "Open the play queue")
+    _HK_Reg("options_menu", "player", "!o", "Open the Options menu")
+    _HK_Reg("force_next", "player", "+n", "Next video")
+    _HK_Reg("force_prev", "player", "+b", "Previous video")
+    _HK_Reg("cinema", "player", "^+e", "Cinema mode")
+    _HK_Reg("close_player", "player", "{ESC}", "Close the player")
+    _HK_Reg("exit_app", "player", "^w", "Exit the application")
+    _HK_Reg("main_download", "main", "!d", "", "Download from link (Alt+D)")
+    _HK_Reg("main_play", "main", "!p", "", "Play YouTube link (Alt+P)")
+    _HK_Reg("main_direct", "main", "!l", "", "Play direct link (Alt+L)")
+    _HK_Reg("main_search", "main", "!s", "", "Search on YouTube (Alt+S)")
+    _HK_Reg("main_collections", "main", "!c", "", "Your Collections (Alt+C)")
+    _HK_Reg("main_audio", "main", "!u", "", "Listen to Audio File (Alt+U)")
+    _HK_Reg("main_recent_files", "main", "!e", "", "Recent Files (Alt+E)")
+    _HK_Reg("main_recent_folders", "main", "!o", "", "Recent Folders (Alt+O)")
+    _HK_Reg("main_radio", "main", "!r", "", "Radio Player (Alt+R)")
+    _HK_Reg("main_radio_fav", "main", "!v", "", "Favorite Stations (Alt+V)")
+    _HK_Reg("main_queue", "main", "!q", "", "Play Queue (Alt+Q)")
+    _HK_Reg("main_dq", "main", "!z", "", "Download Queue (Alt+Z)")
+    _HK_Reg("main_fav", "main", "!f", "", "Favorites (Alt+F)")
+    _HK_Reg("main_history", "main", "!w", "", "Watch History (Alt+W)")
+    _HK_Reg("main_settings", "main", "^+s", "", "Settings... (Ctrl+Shift+S)")
+    _HK_Reg("main_readme", "main", "{F1}", "", "Readme... (F1)")
+    _HK_Reg("main_changelog", "main", "{F2}", "View changelog", "")
+    _HK_Reg("main_update_app", "main", "^+u", "Check for updates", "")
+    _HK_Reg("main_update_ytdlp", "main", "^+y", "Check for yt-dlp updates", "")
+    _HK_Reg("main_exit", "main", "^w", "Exit the application", "")
+EndFunc
+
+; Gan ID dummy cua player (tao lai moi lan mo cua so player)
+Func _HK_SetPlayerHandles()
+    _HK_SetHandle("play_pause", $hDummySpace)
+    _HK_SetHandle("seek_back", $hDummyLeft)
+    _HK_SetHandle("seek_fwd", $hDummyRight)
+    _HK_SetHandle("seek_back_1m", $hDummyAltLeft)
+    _HK_SetHandle("seek_fwd_1m", $hDummyAltRight)
+    _HK_SetHandle("vol_up", $hDummyUp)
+    _HK_SetHandle("vol_down", $hDummyDown)
+    _HK_SetHandle("pan_left", $hDummyCtrlLeft)
+    _HK_SetHandle("pan_right", $hDummyCtrlRight)
+    _HK_SetHandle("restart", $hDummyHome)
+    _HK_SetHandle("near_end", $hDummyEnd)
+    _HK_SetHandle("slower", $hDummyS)
+    _HK_SetHandle("normal_speed", $hDummyD)
+    _HK_SetHandle("faster", $hDummyF)
+    _HK_SetHandle("step_shorter", $hDummyMinus)
+    _HK_SetHandle("step_longer", $hDummyEqual)
+    _HK_SetHandle("show_percent", $hDummyP)
+    _HK_SetHandle("goto_time", $hDummyG)
+    _HK_SetHandle("lyrics", $hDummyCtrlAltL)
+    _HK_SetHandle("copy_title", $hDummyC)
+    _HK_SetHandle("eq_dialog", $hDummyEq)
+    _HK_SetHandle("file_info", $hDummyI)
+    _HK_SetHandle("next", $hDummyN)
+    _HK_SetHandle("prev", $hDummyB)
+    _HK_SetHandle("first_file", $hDummyCtrlHome)
+    _HK_SetHandle("last_file", $hDummyCtrlEnd)
+    _HK_SetHandle("elapsed", $hDummyCtrlT)
+    _HK_SetHandle("total", $hDummyCtrlShiftT)
+    _HK_SetHandle("remaining", $hDummyRemaining)
+    _HK_SetHandle("repeat", $hDummyR)
+    _HK_SetHandle("copy_link", $hDummyCtrlK)
+    _HK_SetHandle("copy_link_time", $hDummyCtrlC)
+    _HK_SetHandle("sel_start", $hDummyBracketLeft)
+    _HK_SetHandle("sel_end", $hDummyBracketRight)
+    _HK_SetHandle("save_sel", $hDummyCtrlS)
+    _HK_SetHandle("open_browser", $hDummyAltB)
+    _HK_SetHandle("goto_channel", $hDummyAltG)
+    _HK_SetHandle("description", $hDummyCtrlShiftD)
+    _HK_SetHandle("comments", $hDummyCtrlShiftC)
+    _HK_SetHandle("transcript", $hDummyCtrlAltT)
+    _HK_SetHandle("queue_add", $hDummyCtrlQ)
+    _HK_SetHandle("queue_open", $hDummyCtrlShiftQ)
+    _HK_SetHandle("options_menu", $hDummyAltO)
+    _HK_SetHandle("force_next", $hDummyShiftN)
+    _HK_SetHandle("force_prev", $hDummyShiftB)
+    _HK_SetHandle("cinema", $hDummyCtrlShiftE)
+    _HK_SetHandle("close_player", $hDummyEsc)
+    _HK_SetHandle("exit_app", $hDummyCtrlW)
 EndFunc
 
 Func contribute()

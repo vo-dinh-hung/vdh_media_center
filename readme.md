@@ -23,6 +23,10 @@ After running, an interface will appear with the following functions:
 - Listen to Audio File: You can listen to music with files already on your computer.
   - Add File: listen a file.
   - Add Folder: listen A folder with many files inside.
+- Recent Files (alt+e): Shows the audio files you listened to recently. Press enter to play a file again; it continues from where you stopped if Resume is turned on in settings. Press delete to remove the selected file. The window also has Remove selected, Clear all and Close buttons. Audio files from your computer are kept here instead of in Watch History.
+- Recent Folders (alt+o): Shows the folders you listened to recently, together with the last file you played in each one. Press enter to continue listening to that folder.
+- Radio Player (alt+r): Listen to radio stations from all over the world. First choose to browse by country or by language and pick one from the list, then type a name in the search box (leave it empty to see the most popular stations) and press enter on a station to play it. If the connection to a station drops, the application tries to reconnect by itself. Use Change country (alt+g) to pick another country or language.
+- Favorite Stations (alt+v): Opens the radio stations you added to your favorites. Press enter to play one, press delete to remove it, or use Clear all favorites.
 
 In the main interface of the software, you can press the Alt key to open the help menu. In this menu, you can view the software's information, read the readme, and contact the main developer.
 
@@ -61,6 +65,8 @@ We have assigned keyboard shortcuts for you to easily use the software and be fl
 - end: end of the video
 - control+k: copy link from clipboard.
 - control+left/right: pan left and pan right.
+- c: copy the title of the track you are listening to (no dialog, only a spoken/status message).
+- alt+left/right: rewind / fast forward exactly 1 minute.
 - control+q: add the song you are listening to the play queue (player).
 - control+shift+q: open the play queue (player).
 - alt+g: go to channel.
@@ -101,6 +107,50 @@ We have assigned keyboard shortcuts for you to easily use the software and be fl
 
 ---
 
+### main window shortcut:
+
+Below are the keyboard shortcuts of the buttons on the main window. You can change all of them in Settings > Shortcuts.
+
+- alt+d: Download from link.
+- alt+p: Play YouTube link.
+- alt+l: Play direct link.
+- alt+s: Search on YouTube.
+- alt+c: Your collections.
+- alt+u: Listen to Audio File.
+- alt+e: Recent Files.
+- alt+o: Recent Folders.
+- alt+r: Radio Player.
+- alt+v: Favorite Stations.
+- alt+q: Play Queue.
+- alt+z: Download Queue.
+- alt+f: Favorites.
+- alt+w: Watch History.
+- control+shift+s: Settings.
+- f1: Readme.
+- f2: view changelog.
+
+---
+
+### radio shortcut:
+
+Below are the keyboard shortcuts in the radio player window:
+
+- enter: play the selected station.
+- control+up/down: increase/decrease volume. The volume slider can also be changed with left/right (5) and page up/down (10).
+- control+left/right: pan left and pan right.
+- page up / page down: previous / next station.
+- control+d: add the station to your favorites (Radio Player).
+- delete: remove the station from your favorites (Favorite Stations).
+- control+r: start or stop recording the station.
+- control+i: hear the song that is now playing.
+- alt+s: stop.
+- alt+k: copy the station link.
+- alt+t: open the sleep timer.
+- alt+g: change country or language.
+- esc: close the window.
+
+---
+
 ### listen file shortcut:
 
 Below are the keyboard shortcuts in the music player interface (only applicable to the "listen to audio file" feature):
@@ -115,8 +165,12 @@ Below are the keyboard shortcuts in the music player interface (only applicable 
 - (Minus) / = (Equal): Decrease / Increase the seek step (seconds jumped by arrows).
 - up/down arrow: increase/decrease volume
 - left/right arrow: rewind/fast forward
+- alt+left/right: rewind / fast forward 1 minute.
+- control+left/right: pan left and pan right.
+- c: copy the title of the file.
 - i: see info
 - control+alt+l: activate view lyrics.
+- control+e: open the equalizer.
 
 ## listen Folder:
 
@@ -132,13 +186,16 @@ Below are the keyboard shortcuts in the music player interface (only applicable 
 - (Minus) / = (Equal): Decrease / Increase the seek step (seconds jumped by arrows).
 - up/down arrow: increase/decrease volume
 - left/right arrow: rewind/fast forward
+- alt+left/right: rewind / fast forward 1 minute.
+- control+left/right: pan left and pan right.
+- c: copy the title of the file.
 - control+alt+l: activate view lyrics.
 
 ---
 
 ### settings
 
-You can customize your favorite features in this settings section.
+You can customize your favorite features in this settings section. Press F1 on any option to hear a short description of it.
 
 ## General  tab
 
@@ -151,6 +208,8 @@ This tab will give you a few options:
 - Automatically check for yt-dlp updates on startup: keeps the download engine (yt-dlp) up to date so that downloading and searching keep working.
 - Turn off sound in application: If you're feeling too dissatisfied with the sound system, this option will solve that problem.
 - show logo when the application start: If selected, the logo sound will be on, and off if you deselect it.
+- Remember where I stopped in each audio file (Resume): when you open an audio file from your computer again, it continues from where you stopped. Each file remembers its own position.
+- Show license confirmation when the application starts: when selected, the license is confirmed each time the application starts: the door sound is played and you hear that the license is accepted. When cleared, the door sound is not played and the application opens straight away.
 
 ## Player  tab
 
@@ -158,7 +217,7 @@ In this tab there will be a number of options used for the music player:
 
 - Audio Output Device: choose which sound device (speakers, headphones...) the player uses.
 - Skip silence (Recommended only for music): automatically jumps over silent parts of the audio.
-- Equalizer: choose a preset (Off, Flat, Classical, Rock, Pop...) to adjust the sound tone, such as bass and treble, to suit the kind of audio.
+- Equalizer: choose a preset (Off, Flat, Classical, Rock, Pop...) to adjust the sound tone, such as bass and treble, to suit the kind of audio. You can also press control+e in the player to open the Equalizer window, where you choose a preset or choose Custom to set the preamp and each frequency band yourself. Use the left and right arrow keys on a slider to change it by 1 dB, page up and page down by 5 dB. The Reset (flat) button puts every slider back to zero.
 - Normalize volume (keeps the loudness even between tracks).
 - Seeking Announcement Mode: chooses what you hear when you rewind or fast forward.
   - Silent: nothing is announced.
@@ -183,6 +242,23 @@ In this tab there will be a number of options used for the music player:
   - Right ear only: Right channel to the right speaker, left speaker silent.
   - Mono: All channels will be merged into one channel.
 - Auto pan audio (Ctrl+Left / Ctrl+Right are disabled): When selected, the music pans by itself, moving slowly between the left and right ears while it plays, with nothing to press. Ctrl+Left and Ctrl+Right do nothing while this option is on. Clear this option to pan by hand again.
+- Auto pan cycle time (seconds, 1 - 60): how many seconds one full sweep from left to right and back takes. It can only be changed while Auto pan audio is selected.
+
+## Radio  tab
+
+In this tab you can customize how radio stations are recorded. To record the station you are listening to, press control+r in the radio player; press it again to stop. Recordings are saved with the station name and the date and time.
+
+- Recording Folder: shows the folder where recordings are saved (by default the radio_recording folder in the application folder). It cannot be typed in.
+  - Change Path: pick another folder for recordings.
+  - Reset to Default Directory: goes back to the default radio_recording folder.
+  - Open Recording Folder: opens the folder in Windows Explorer.
+- Recording format: choose MP3, M4A, OGG or WAV.
+- Recording bitrate: the quality of MP3, M4A and OGG recordings. A higher number sounds better and makes a bigger file. WAV is not compressed, so it ignores this setting.
+- Recording channels: record in stereo or in mono (half the file size).
+- Sample rate: choose the sampling rate, or keep the one the station uses (Same as the station).
+- Stop recording automatically after (minutes, 0 = never): the recording stops by itself after this many minutes.
+- Recording volume (0-100): how loud the recordings are. 100 is the full volume of the station.
+
 ## Search tab
 
 In this tab you can customize search settings:
@@ -197,6 +273,17 @@ In this tab there will be a few options related to configuration data:
 
 - Backup Configuration: saves your current settings to a file for safekeeping.
 - Restore Configuration: loads your settings back from a backup file you saved earlier.
+
+## Shortcuts tab
+
+In this tab you can change the keyboard shortcuts to the keys you like.
+
+- Show shortcuts for: choose whether the list shows the shortcuts of the main window or of the player.
+- Shortcuts list: use the up and down arrow keys to choose an action and press enter to change its shortcut.
+- Change...: opens a window where you press the new keys for the selected action, or choose them from a list.
+- Reset this one: sets the selected action back to its original shortcut.
+- Remove: removes the shortcut of the selected action.
+- Reset all shortcuts: sets every shortcut of the main window and the player back to the original keys.
 
 ## download tab:
 
@@ -228,13 +315,14 @@ you can access in music player.
 - copy link : you can copy link to paste in editing tools.
 - Add to queue: Adds the video to the play queue.
 - Play queue: Opens the play queue.
+- Add to download queue: Adds the video to the download queue.
 - Open in Browser: Open search results in the default browser.
 - Add to Favorite: You can add the videos you want to listen to to your favorites list.
 - Video description: This section is for reading the video description. You can also export it to a .txt or .html file for reading.
 - video comments: Here you can read, copy and export files from all comments in a video you have selected.
 - go to time: allows you to jump to any music in a video.
-- Sleep Timer: Allows you to schedule music to turn off. This feature is useful when you need quiet to rest.
-- add to collection: You can add the video you're watching to your collection.
+- Sleep Timer: Allows you to schedule music to turn off. This feature is useful when you need quiet to rest. You can also choose to fade out the volume before the application closes and set how many seconds the fade lasts. The sleep timer is also available in the radio player (alt+t).
+- add to collection: You can add the video you're watching to your collection. If it is already in one, the item becomes Remove from Collection.
 - Video Transcript: You can read what's in the video.
   - Text only: Only display normal text.
   - With timestamps: Display the time so you know exactly when it's there.
