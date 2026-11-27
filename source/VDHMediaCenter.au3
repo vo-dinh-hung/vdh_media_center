@@ -199,7 +199,12 @@ Func _VLC_Direct_Play($sUrl, $bAudioOnly = False)
     EndIf
 
     ; Volume normalization (Settings > Player): VLC's "normvol" audio filter, applied from this track on
-    If $g_bNormalizeVolume Then DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_add_option", "ptr", $pMedia, "str", ":audio-filter=normvol")
+    ; Version 3.2: voice enhancement adds the "compressor" filter (Settings > Player > Voice enhancement)
+    Local $sAFilter = ""
+    If $g_iVoiceMode > 0 Then $sAFilter = "compressor"
+    If $g_bNormalizeVolume Then $sAFilter &= ($sAFilter = "" ? "" : ":") & "normvol"
+    If $sAFilter <> "" Then DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_add_option", "ptr", $pMedia, "str", ":audio-filter=" & $sAFilter)
+    _Voice_AddMediaOptions($pMedia)
 
     ; Audio-only (Radio): never let libvlc open its own video window ("VLC (Direct3D11 output)"), it steals the keyboard focus.
     ; Also drop the stale window handle left over from the Player tab.
@@ -624,6 +629,12 @@ Func _VLC_ApplyEqualizer()
                 Next
             EndIf
         EndIf
+    ElseIf $g_iVoiceMode > 0 Then
+        Local $aEqV = DllCall($hVLC_Dll, "ptr:cdecl", "libvlc_audio_equalizer_new")
+        If Not @error And IsArray($aEqV) Then
+            $pEq = $aEqV[0]
+            If $pEq Then _Voice_FillEq($pEq)
+        EndIf
     EndIf
     DllCall($hVLC_Dll, "int:cdecl", "libvlc_media_player_set_equalizer", "ptr", $oVLC_Player, "ptr", $pEq)
     If $pEq Then DllCall($hVLC_Dll, "none:cdecl", "libvlc_audio_equalizer_release", "ptr", $pEq)
@@ -683,7 +694,7 @@ For $iMsg In $aGlobalMsgs
     DllCall("user32.dll", "bool", "ChangeWindowMessageFilter", "uint", $iMsg, "dword", 1)
 Next
 
-Global $version = "3.1"
+Global $version = "3.2"
 Global $YT_DLP_PATH = @ScriptDir & "\lib\yt-dlp.exe"
 ; Tiện ích lấy phụ đề YouTube (được đóng gói từ youtube_transcript.py).
 Global $YT_TRANSCRIPT_EXE = @ScriptDir & "\lib\youtube_transcript.exe"
@@ -927,6 +938,29 @@ $g_bPanDebug = IniRead($CONFIG_FILE, "Settings", "PanDebug", "false") == "true"
 $g_bAutoPan = IniRead($CONFIG_FILE, "Settings", "AutoPan", "false") == "true"
 $g_iAutoPanPeriod = Int(IniRead($CONFIG_FILE, "Settings", "AutoPanPeriod", "8"))
 If $g_iAutoPanPeriod < 1 Or $g_iAutoPanPeriod > 60 Then $g_iAutoPanPeriod = 8
+
+; ---- Version 3.3: voice enhancement, chapters, podcasts, extra search sources ----
+Global $g_iVoiceMode = Int(IniRead($CONFIG_FILE, "Settings", "VoiceEnhance", "0")) ; Settings > Player: 0 = Off, 1 = Light, 2 = Strong (Ctrl+Shift+V in the player)
+If $g_iVoiceMode < 0 Or $g_iVoiceMode > 2 Then $g_iVoiceMode = 0
+Global $g_bAnnounceChapters = IniRead($CONFIG_FILE, "Settings", "AnnounceChapters", "true") == "true" ; Settings > Player
+Global $g_sSearchSource = IniRead($CONFIG_FILE, "Settings", "SearchSource", "YouTube") ; Search window > Source
+If $g_sSearchSource <> "YouTube" And $g_sSearchSource <> "SoundCloud" Then $g_sSearchSource = "YouTube"
+Global $g_aChapT[1] = [0], $g_aChapN[1] = [""], $g_iChapCount = 0, $g_iChapCur = -1
+Global $g_iChapPid = 0, $g_iChapMode = 0, $g_sChapOut = "", $g_hChapTimer = 0
+Global $menu_item_chapters = -1, $menu_item_voice = -1
+Global $hDummyChapNext = 0, $hDummyChapPrev = 0, $hDummyChapList = 0, $hDummyVoice = 0
+Global $PODCASTS_FILE = $SETTINGS_DIR & "\podcasts.dat"
+Global $PODCAST_PLAYED_FILE = $SETTINGS_DIR & "\podcast_played.dat"
+
+; ---- Subscriptions: YouTube channels + podcasts, check for new content (Settings > General) ----
+Global $YT_SUBS_FILE = $SETTINGS_DIR & "\youtube_subs.dat"        ; one line per channel: channel id|name|id of the newest video already seen
+Global $SUB_NOTIFIED_FILE = $SETTINGS_DIR & "\subs_notified.dat"  ; one line per subscription: key|newest item already announced
+Global $g_bCheckSubsOnStart = IniRead($CONFIG_FILE, "Settings", "CheckSubsOnStart", "true") == "true" ; check the subscriptions when the application starts
+Global $g_oSubNew = 0 ; Scripting.Dictionary: "pod:feed" / "yt:channel" -> number of new items found by the last check
+Global $g_aSubJobs[1][4], $g_iSubJobN = 0, $g_iSubJobI = 0, $g_iSubPid = 0, $g_bSubData = Binary(""), $g_hSubTimer = 0 ; startup check (see _Sub_StartupCheck)
+Global $g_iSubNewPod = 0, $g_iSubNewYT = 0
+Global $g_hTypeCb = 0, $g_pTypeOld = 0, $g_hTypeEdit = 0 ; typing sounds in other input boxes (see _TypeSnd_Attach)
+Global $menu_item_yt_sub = -1 ; player Options > Subscribe to channel
 
 ; ---- Resume theo tung file nghe, Recent files/folders, Radio, Equalizer tuy chinh, Phim tat tuy chinh ----
 Global $g_bResumeLocal = IniRead($CONFIG_FILE, "Settings", "ResumeLocal", "true") == "true"
@@ -1223,7 +1257,7 @@ EndIf
 ; Thoat ung dung bang Preferences > Exit hoac Ctrl+W.
 ; Giu $WS_SYSMENU de thanh menu (Preferences/Help) dieu huong Trai/Phai binh thuong;
 ; nut Close (X) bi vo hieu hoa ngay duoi day thay vi bo han style.
-$mainform = GUICreate(_TF("VDHMediaCenter version{1}", $version), 300, 590, -1, -1, BitOR($WS_CAPTION, $WS_POPUP, $WS_SYSMENU))
+$mainform = GUICreate(_TF("VDHMediaCenter version{1}", $version), 300, 630, -1, -1, BitOR($WS_CAPTION, $WS_POPUP, $WS_SYSMENU))
 Local $hSysMenuMain = DllCall("user32.dll", "handle", "GetSystemMenu", "hwnd", $mainform, "bool", 0)
 If Not @error And IsArray($hSysMenuMain) Then DllCall("user32.dll", "bool", "EnableMenuItem", "handle", $hSysMenuMain[0], "uint", 0xF060, "uint", 0x0001) ; SC_CLOSE, MF_BYCOMMAND|MF_GRAYED
 GUISetBkColor($COLOR_BLUE)
@@ -1234,20 +1268,22 @@ $label = GUICtrlCreateLabel(_TF("{1} and warm welcome to VDHMediaCenter applicat
 GUICtrlSetFont(-1, 14, 800)
 GUICtrlSetColor(-1, 0xFFFFFF)
 
-Global $btn_Menu_DL = GUICtrlCreateButton(_T("Download from link (Alt+D)"), 50, 60, 200, 36)
-Global $btn_Menu_PL = GUICtrlCreateButton(_T("Play YouTube link (Alt+P)"), 50, 100, 200, 36)
-Global $btn_Menu_Direct = GUICtrlCreateButton(_T("Play direct link (Alt+L)"), 50, 140, 200, 36)
-Global $btn_Menu_SC = GUICtrlCreateButton(_T("Search on YouTube (Alt+S)"), 50, 180, 200, 36)
-Global $btn_Menu_CL = GUICtrlCreateButton(_T("Your Collections (Alt+C)"), 50, 220, 200, 36)
-Global $btn_Menu_Audio = GUICtrlCreateButton(_T("Listen to Audio File (Alt+U)"), 50, 260, 200, 36)
-Global $btn_Menu_RF = GUICtrlCreateButton(_T("Recent Files (Alt+E)"), 50, 300, 200, 36)
-Global $btn_Menu_RD = GUICtrlCreateButton(_T("Recent Folders (Alt+O)"), 50, 340, 200, 36)
-Global $btn_Menu_Radio = GUICtrlCreateButton(_T("Radio Player (Alt+R)"), 50, 380, 200, 36)
-Global $btn_Menu_RadioFav = GUICtrlCreateButton(_T("Favorite Stations (Alt+V)"), 50, 420, 200, 36)
-Global $btn_Menu_Queue = GUICtrlCreateButton(_T("Play Queue (Alt+Q)"), 50, 460, 200, 36)
-Global $btn_Menu_DQ = GUICtrlCreateButton(_T("Download Queue (Alt+Z)"), 50, 500, 200, 36)
-Global $btn_Menu_FV = GUICtrlCreateButton(_T("Favorites (Alt+F)"), 10, 545, 100, 30)
-Global $btn_Menu_WS = GUICtrlCreateButton(_T("Watch History (Alt+W)"), 120, 545, 150, 30)
+Global $btn_Menu_DL = GUICtrlCreateButton(_T("Download from link (Alt+D)"), 50, 60, 200, 34)
+Global $btn_Menu_PL = GUICtrlCreateButton(_T("Play Video or Music Link (Alt+P)"), 50, 97, 200, 34)
+Global $btn_Menu_Direct = GUICtrlCreateButton(_T("Play direct link (Alt+L)"), 50, 134, 200, 34)
+Global $btn_Menu_SC = GUICtrlCreateButton(_T("Search Videos and Music (Alt+S)"), 50, 171, 200, 34)
+Global $btn_Menu_CL = GUICtrlCreateButton(_T("Your Collections (Alt+C)"), 50, 208, 200, 34)
+Global $btn_Menu_Audio = GUICtrlCreateButton(_T("Listen to Audio File (Alt+U)"), 50, 245, 200, 34)
+Global $btn_Menu_RF = GUICtrlCreateButton(_T("Recent Files (Alt+E)"), 50, 282, 200, 34)
+Global $btn_Menu_RD = GUICtrlCreateButton(_T("Recent Folders (Alt+O)"), 50, 319, 200, 34)
+Global $btn_Menu_Radio = GUICtrlCreateButton(_T("Radio Player (Alt+R)"), 50, 356, 200, 34)
+Global $btn_Menu_RadioFav = GUICtrlCreateButton(_T("Favorite Stations (Alt+V)"), 50, 393, 200, 34)
+Global $btn_Menu_Podcasts = GUICtrlCreateButton(_T("Podcasts (Alt+K)"), 50, 430, 200, 34)
+Global $btn_Menu_YTS = GUICtrlCreateButton(_T("YouTube Subscriptions (Alt+Y)"), 50, 467, 200, 34)
+Global $btn_Menu_Queue = GUICtrlCreateButton(_T("Play Queue (Alt+Q)"), 50, 504, 200, 34)
+Global $btn_Menu_DQ = GUICtrlCreateButton(_T("Download Queue (Alt+Z)"), 50, 541, 200, 34)
+Global $btn_Menu_FV = GUICtrlCreateButton(_T("Favorites (Alt+F)"), 10, 585, 100, 30)
+Global $btn_Menu_WS = GUICtrlCreateButton(_T("Watch History (Alt+W)"), 120, 585, 150, 30)
 
 Global $menu_main = GUICtrlCreateMenu(_T("Preferences"))
 Global $menu_settings = GUICtrlCreateMenuItem(_T("Settings... (Ctrl+Shift+S)"), $menu_main)
@@ -1433,6 +1469,8 @@ _HK_SetHandle("main_recent_files", $btn_Menu_RF, $btn_Menu_RF)
 _HK_SetHandle("main_recent_folders", $btn_Menu_RD, $btn_Menu_RD)
 _HK_SetHandle("main_radio", $btn_Menu_Radio, $btn_Menu_Radio)
 _HK_SetHandle("main_radio_fav", $btn_Menu_RadioFav, $btn_Menu_RadioFav)
+_HK_SetHandle("main_podcasts", $btn_Menu_Podcasts, $btn_Menu_Podcasts)
+_HK_SetHandle("main_yt_subs", $btn_Menu_YTS, $btn_Menu_YTS)
 _HK_SetHandle("main_queue", $btn_Menu_Queue, $btn_Menu_Queue)
 _HK_SetHandle("main_dq", $btn_Menu_DQ, $btn_Menu_DQ)
 _HK_SetHandle("main_fav", $btn_Menu_FV, $btn_Menu_FV)
@@ -1453,6 +1491,10 @@ _Recent_MigrateHistory() ; mot lan: chuyen cac bai nghe cuc bo cu tu Watch Histo
 If $g_bAutoUpdate Or $g_bAutoUpdateYTDLP Then
     AdlibRegister("_CheckUpdatesSilently", 5000) ; Wait 5s after start to not bother user immediately
 EndIf
+
+; Subscriptions: look for new podcast episodes and new YouTube videos in the background (Settings > General).
+; Something new = new_content.wav + a short announcement; nothing new = silence. When the option is off, nothing is checked here.
+If $g_bCheckSubsOnStart Then AdlibRegister("_Sub_StartupCheck", 8000)
 
 While 1
     Local $msg = GUIGetMsg()
@@ -1489,6 +1531,10 @@ While 1
                 $msg = $btn_Menu_Radio
             Case GUICtrlGetHandle($btn_Menu_RadioFav)
                 $msg = $btn_Menu_RadioFav
+            Case GUICtrlGetHandle($btn_Menu_Podcasts)
+                $msg = $btn_Menu_Podcasts
+            Case GUICtrlGetHandle($btn_Menu_YTS)
+                $msg = $btn_Menu_YTS
         EndSwitch
     EndIf
 
@@ -1546,6 +1592,14 @@ While 1
         Case $btn_Menu_RadioFav
             _GlobalSoundPlay("sounds/enter.wav", "system")
             _RunSubWindow("_ShowRadioFavorites")
+
+        Case $btn_Menu_Podcasts
+            _GlobalSoundPlay("sounds/enter.wav", "system")
+            _RunSubWindow("_ShowPodcasts")
+
+        Case $btn_Menu_YTS
+            _GlobalSoundPlay("sounds/enter.wav", "system")
+            _RunSubWindow("_YTS_SubsWindow")
 
         Case $btn_Menu_Queue
             _GlobalSoundPlay("sounds/enter.wav", "system")
@@ -2403,10 +2457,10 @@ _AppSoundPlay(@ScriptDir & "\sounds\download_finish.wav")
 EndFunc
 
 Func _ShowPlayer()
-    Local $hGuiPL = GUICreate(_T("YouTube Player"), 400, 290)
+    Local $hGuiPL = GUICreate(_T("Video and Music Link Player"), 400, 290)
     GUISetBkColor($COLOR_BLUE)
 
-    GUICtrlCreateLabel(_T("Enter the video link you want to play:"), 10, 20, 380, 20)
+    GUICtrlCreateLabel(_T("Enter the YouTube or SoundCloud link you want to play:"), 10, 20, 380, 20)
     GUICtrlSetColor(-1, 0xFFFFFF)
     $linkedit = GUICtrlCreateInput("", 10, 50, 380, 20)
 
@@ -2745,7 +2799,7 @@ Func _SearchEditProc($hWnd, $iMsg, $wParam, $lParam)
 EndFunc
 
 Func _ShowSearch()
-    $hCurrentSubGui = GUICreate(_T("Search"), 400, 160)
+    $hCurrentSubGui = GUICreate(_T("Search"), 400, 200)
     GUISetBkColor($COLOR_BLUE)
 
     GUICtrlCreateLabel(_T("Enter keyword to search:"), 10, 15, 80, 20)
@@ -2764,12 +2818,18 @@ Func _ShowSearch()
     GUICtrlSetTip(-1, _T("Select the search filter. Use the arrow keys to browse the list in alphabetical order"))
     GUICtrlSetData(-1, _TL("4K|Channels|lives|Most viewed|No Filter|Playlist|Rating|Shorts|This Month|This Week|upload date|Video"), _T($g_sSearchFilter))
 
+    GUICtrlCreateLabel(_T("Source:"), 10, 85, 80, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $cbo_source = GUICtrlCreateCombo("", 100, 82, 210, 20, $CBS_DROPDOWNLIST)
+    GUICtrlSetTip(-1, _T("Choose where to search: YouTube or SoundCloud. The filter above is used for YouTube only."))
+    GUICtrlSetData(-1, "YouTube|SoundCloud", $g_sSearchSource)
+
     $btn_search_go = GUICtrlCreateButton(_T("Search (Alt+S)"), 320, 10, 70, 25)
     GUICtrlSetState(-1, $GUI_DEFBUTTON)
 
     Local $btn_voice_search = GUICtrlCreateButton(_T("Voice search (Alt+V)"), 320, 47, 70, 25)
 
-    $btn_search_hist = GUICtrlCreateButton(_T("Search History (Alt+H)"), 100, 90, 210, 30)
+    $btn_search_hist = GUICtrlCreateButton(_T("Search History (Alt+H)"), 100, 125, 210, 30)
 
     Local $aAccelSC[3][2] = [["!s", $btn_search_go], ["!h", $btn_search_hist], ["!v", $btn_voice_search]]
     GUISetAccelerators($aAccelSC, $hCurrentSubGui)
@@ -2856,6 +2916,8 @@ Func _ShowSearch()
                         If $g_bVoiceAutoSearch Then
                             $sCurrentKeyword = $sResult
                             $g_sSearchFilter = _TR(GUICtrlRead($cbo_filter))
+                            $g_sSearchSource = GUICtrlRead($cbo_source)
+                            IniWrite($CONFIG_FILE, "Settings", "SearchSource", $g_sSearchSource)
                             IniWrite($CONFIG_FILE, "Settings", "SearchFilter", $g_sSearchFilter)
                             _AddSearchHistory($sCurrentKeyword)
                             Local $sRes = _ShowSearchResultsWindow($sCurrentKeyword, $g_sSearchFilter)
@@ -2877,6 +2939,8 @@ Func _ShowSearch()
             Case $btn_search_go
                 $sCurrentKeyword = GUICtrlRead($inp_search)
                 $g_sSearchFilter = _TR(GUICtrlRead($cbo_filter))
+                $g_sSearchSource = GUICtrlRead($cbo_source)
+                IniWrite($CONFIG_FILE, "Settings", "SearchSource", $g_sSearchSource)
                 IniWrite($CONFIG_FILE, "Settings", "SearchFilter", $g_sSearchFilter)
                 If $sCurrentKeyword = "" Then
                     MsgBox(16, _T("Error"), _T("Please enter a keyword to search!"))
@@ -3151,6 +3215,7 @@ Func _SearchYouTube($sKeyword, $bAppend)
     If Not $bAppend Then
         Local $sLoadingText = $sKeyword
         If $g_sSearchFilter <> "No Filter" Then $sLoadingText &= " (" & _T($g_sSearchFilter) & ")"
+        If $g_sSearchSource <> "YouTube" Then $sLoadingText = $sKeyword & " (" & $g_sSearchSource & ")"
         $hWaitGui = GUICreate(_T("Searching"), 250, 80, -1, -1, BitOR($WS_POPUP, $WS_BORDER), BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW), $hResultsGui)
         GUICtrlCreateLabel($sLoadingText & "...", 10, 25, 230, 20, $SS_CENTER)
         GUISetBkColor(0xFFFFFF, $hWaitGui)
@@ -3196,6 +3261,9 @@ Func _SearchYouTube($sKeyword, $bAppend)
         Case Else ; No Filter
             $sSearchTarget = "ytsearch" & $iEnd & ":" & $sKeyword
     EndSwitch
+
+    ; Version 3.3: other sources. SoundCloud = yt-dlp keyword search.
+    If $g_sSearchSource = "SoundCloud" Then $sSearchTarget = "scsearch" & $iEnd & ":" & $sKeyword
 
     ; Use JSON output to ensure all video metadata stays together
     Local $sParams = '--flat-playlist --print-json --playlist-start ' & $iStart & ' --playlist-end ' & $iEnd & ' --no-warnings --encoding utf-8 -- "' & $sSearchTarget & '"'
@@ -3259,20 +3327,37 @@ Func _SearchYouTube($sKeyword, $bAppend)
             Local $sTypeMatch = StringRegExp($sLine, '"_type":\s*"([^"]+)"', 3)
             Local $sFollowerMatch = StringRegExp($sLine, '"channel_follower_count":\s*(\d+)', 3)
 
-            If IsArray($sIdMatch) And IsArray($sTitleMatch) Then
+            Local $bOtherSite = ($g_sSearchSource <> "YouTube")
+            If IsArray($sIdMatch) And (IsArray($sTitleMatch) Or $bOtherSite) Then
                 $sCurrentId = $sIdMatch[0]
-                $sCurrentTitle = _UnescapeJSON($sTitleMatch[0])
+                $sCurrentTitle = ""
+                If IsArray($sTitleMatch) Then $sCurrentTitle = _UnescapeJSON($sTitleMatch[0])
+                If $bOtherSite Then
+                    ; items of other sites keep their full link as id
+                    Local $aSiteUrl = StringRegExp($sLine, '"webpage_url":\s*"(https?:[^"]+)"', 3)
+                    If Not IsArray($aSiteUrl) Then $aSiteUrl = StringRegExp($sLine, '"url":\s*"(https?:[^"]+)"', 3)
+                    If IsArray($aSiteUrl) Then $sCurrentId = $aSiteUrl[0]
+                    If Not _IsWebLink($sCurrentId) Then ContinueLoop
+                EndIf
 
                 $sCurrentDur = ""
                 If IsArray($sDurMatch) Then $sCurrentDur = $sDurMatch[0]
                 $sCurrentUp = ""
                 If IsArray($sUploaderMatch) Then $sCurrentUp = _UnescapeJSON($sUploaderMatch[0])
+                If $bOtherSite Then
+                    If $sCurrentTitle = "" Then $sCurrentTitle = _Search_TitleFromUrl($sCurrentId, $sCurrentUp)
+                    If $sCurrentDur = "" Then
+                        Local $aDurSec = StringRegExp($sLine, '"duration":\s*([0-9.]+)', 3)
+                        If IsArray($aDurSec) Then $sCurrentDur = _FormatTime(Int(Number($aDurSec[0])))
+                    EndIf
+                EndIf
                 $sCurrentViews = ""
                 If IsArray($sViewMatch) Then $sCurrentViews = $sViewMatch[0]
                 $sCurrentDate = ""
                 If IsArray($sDateMatch) Then $sCurrentDate = $sDateMatch[0]
                 $sCurrentType = $sDefaultType
                 If IsArray($sTypeMatch) Then $sCurrentType = $sTypeMatch[0]
+                If $bOtherSite Then $sCurrentType = "video"
 
                 If IsArray($sFollowerMatch) Then
                     $sCurrentFollowers = $sFollowerMatch[0]
@@ -3283,7 +3368,7 @@ Func _SearchYouTube($sKeyword, $bAppend)
                 $sCurrentLive = ""
                 If $sLiveMatch Then $sCurrentLive = "True"
                 ; Tự động nhận diện Playlist/Channel dựa trên ID nếu các cách trên thất bại
-                If $sCurrentType <> "playlist" And $sCurrentType <> "channel" Then
+                If Not $bOtherSite And $sCurrentType <> "playlist" And $sCurrentType <> "channel" Then
                     If StringLeft($sCurrentId, 2) = "UC" Or StringLeft($sCurrentId, 2) = "UU" Or StringInStr($sLine, "youtube:tab") Then
                          $sCurrentType = "channel"
                     ElseIf StringLen($sCurrentId) > 11 Or StringLeft($sCurrentId, 2) = "PL" Or StringLeft($sCurrentId, 2) = "RD" Or StringLeft($sCurrentId, 2) = "OL" Then
@@ -3421,12 +3506,17 @@ Func _ShowContextMenu($bIsFavContext = False)
     _GUICtrlMenu_AddMenuItem($hMenu, _T("View &Lyrics..."), 1009)
 
     ; Playlists / channels in the search results cannot be queued (only single videos)
+    Local $bCanSub = Not _IsWebLink($sID)
+    Local $sItemType = "video"
+    If $bIsFavContext = 0 And UBound($aSearchTypes) > $iIndex + 1 Then $sItemType = $aSearchTypes[$iIndex + 1]
+    If $sItemType = "playlist" Then $bCanSub = False
     Local $bQueueable = True
     If $bIsFavContext = 0 And UBound($aSearchTypes) > $iIndex + 1 Then
         If $aSearchTypes[$iIndex + 1] = "playlist" Or $aSearchTypes[$iIndex + 1] = "channel" Then $bQueueable = False
     EndIf
     If $bQueueable Then _GUICtrlMenu_AddMenuItem($hMenu, _T("Add to &queue..."), 1013)
     If $bQueueable Then _GUICtrlMenu_AddMenuItem($hMenu, _T("Add to do&wnload queue..."), 1015)
+    If $bCanSub Then _GUICtrlMenu_AddMenuItem($hMenu, _T("S&ubscribe to channel..."), 1016)
 
     Local $bIsInCollection = _IsVideoInAnyCollection($sID)
     _GUICtrlMenu_AddMenuItem($hMenu, _Ternary($bIsInCollection, _T("Remove from &Collection..."), _T("Add to &Collection...")), 1008)
@@ -3471,6 +3561,8 @@ Func _ShowContextMenu($bIsFavContext = False)
                 MsgBox(64, _T("Success"), _T("Removed from history successfully!"))
                 Return "REFRESH"
             EndIf
+        Case 1016 ; Subscribe to / unsubscribe from the channel of this item
+            _YTS_SubscribeFromItem($sID, $sTitle, $sItemType, $hActiveGui)
         Case 1001
             _PlayLoop($iIndex, False) ; Video
         Case 1002
@@ -3482,7 +3574,7 @@ Func _ShowContextMenu($bIsFavContext = False)
         Case 1005
             _Action_OpenBrowser($iIndex)
         Case 1006
-            _Action_CopyLink($iIndex)
+            _Action_CopyLink($iIndex, $hActiveGui)
         Case 1009
             _ShowSongLyrics($sTitle, $hActiveGui, $sID)
         Case 1013
@@ -3498,9 +3590,9 @@ Func _ShowContextMenu($bIsFavContext = False)
                 _AddtoCollection($sID, $sTitle)
             EndIf
         Case 1011 ; Telegram
-            ShellExecute("https://t.me/share/url?url=" & _URLEncode("https://www.youtube.com/watch?v=" & $sID) & "&text=" & _URLEncode($sTitle))
+            _ShowShareLinkDialog("telegram", $sID, $sTitle, $hActiveGui)
         Case 1012 ; Facebook
-            ShellExecute("https://www.facebook.com/sharer/sharer.php?u=" & _URLEncode("https://www.youtube.com/watch?v=" & $sID))
+            _ShowShareLinkDialog("facebook", $sID, $sTitle, $hActiveGui)
     EndSwitch
 EndFunc
 
@@ -3534,11 +3626,165 @@ Func _URLEncode($sText)
     Return $sEncoded
 EndFunc
 
-Func _Action_CopyLink($iIndex)
+Func _Action_CopyLink($iIndex, $hParent = 0)
     If $iIndex < 0 Or $iIndex >= UBound($aSearchIds) - 1 Then Return
-    Local $sUrl = "https://www.youtube.com/watch?v=" & $aSearchIds[$iIndex + 1]
-    ClipPut($sUrl)
-    MsgBox(64, _T("Info"), _T("Link copied to clipboard!"))
+    _ShowCopyLinkDialog($aSearchIds[$iIndex + 1], $hParent)
+EndFunc
+
+; ======================================================================
+;  COPY LINK DIALOG (version 3.2)
+; ======================================================================
+; Lets the user choose which kind of YouTube link to copy (links of other sites such as SoundCloud are copied straight away):
+;   - the standard link   https://www.youtube.com/watch?v=<id>
+;   - the short link      https://youtu.be/<id>
+; The dialog stays open after a link is copied (so both kinds can be copied one after the other);
+; the Close button or Esc closes it. $hParent = the window that owns the dialog (0 = the window that is active now).
+Func _ShowCopyLinkDialog($sID, $hParent = 0)
+    $sID = StringStripWS($sID, 3)
+    If $sID = "" Then Return
+
+    ; Links of other sites (SoundCloud...) have no short form: no dialog, the link is copied straight away
+    If _IsWebLink($sID) Then
+        ClipPut($sID)
+        _ReportStatus(_T("Link copied to clipboard"))
+        Return
+    EndIf
+
+    If Not IsHWnd($hParent) Then
+        $hParent = WinGetHandle("[ACTIVE]")
+        If Not IsHWnd($hParent) Or WinGetProcess($hParent) <> @AutoItPID Then $hParent = 0
+    EndIf
+
+    Local $hCopyGui = GUICreate(_T("Copy link"), 340, 205, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU), $WS_EX_TOPMOST, $hParent)
+    GUISetBkColor($COLOR_BLUE)
+
+    GUICtrlCreateLabel(_T("Choose the type of link to copy:"), 10, 15, 320, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+
+    Local $btnStandard = GUICtrlCreateButton(_T("&Standard link"), 20, 45, 300, 32)
+    GUICtrlSetState(-1, $GUI_DEFBUTTON)
+    Local $btnShort = GUICtrlCreateButton(_T("S&hort link"), 20, 85, 300, 32)
+
+    Local $lblStatus = GUICtrlCreateLabel("", 20, 125, 300, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+
+    Local $btnClose = GUICtrlCreateButton(_T("&Close"), 110, 155, 120, 32)
+
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $aAccel[1][2] = [["{ESC}", $hDummyEsc]]
+    GUISetAccelerators($aAccel, $hCopyGui)
+
+    GUISetState(@SW_SHOW, $hCopyGui)
+    _AllowUIPI($hCopyGui)
+    ControlFocus($hCopyGui, "", $btnStandard)
+
+    Local $nMsg, $sLink, $sDone
+    While 1
+        $nMsg = _GuiMsg($hCopyGui)
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnClose, $hDummyEsc
+                ExitLoop
+            Case $btnStandard, $btnShort
+                If $nMsg = $btnStandard Then
+                    $sLink = _VideoLink($sID)
+                    $sDone = _T("Standard link copied to clipboard")
+                Else
+                    $sLink = _VideoShortLink($sID)
+                    $sDone = _T("Short link copied to clipboard")
+                EndIf
+                ClipPut($sLink)
+                GUICtrlSetData($lblStatus, $sDone)
+                _NVDA_Speak($sDone)
+        EndSwitch
+    WEnd
+
+    GUIDelete($hCopyGui)
+    If IsHWnd($hParent) Then
+        GUISwitch($hParent)
+        WinActivate($hParent)
+    EndIf
+EndFunc
+
+
+; ======================================================================
+;  SHARE LINK DIALOG
+; ======================================================================
+; Shown when the user picks a platform in the Share menu (Telegram, Facebook...). Like the Copy link
+; dialog, it lets the user choose which kind of YouTube link to share:
+;   - the standard link   https://www.youtube.com/watch?v=<id>
+;   - the short link      https://youtu.be/<id>
+; After a choice the dialog closes and the share page of the platform opens in the browser with that link.
+; Esc / Cancel closes the dialog without sharing anything.
+; $sPlatform = "telegram" or "facebook". $hParent = the window that owns the dialog (0 = the active window).
+Func _ShowShareLinkDialog($sPlatform, $sID, $sTitle = "", $hParent = 0)
+    $sID = StringStripWS($sID, 3)
+    If $sID = "" Then Return
+
+    ; Links of other sites (SoundCloud...) have no short form: no dialog, the link is shared straight away
+    If _IsWebLink($sID) Then
+        _Share_Open($sPlatform, $sID, $sTitle)
+        Return
+    EndIf
+
+    If Not IsHWnd($hParent) Then
+        $hParent = WinGetHandle("[ACTIVE]")
+        If Not IsHWnd($hParent) Or WinGetProcess($hParent) <> @AutoItPID Then $hParent = 0
+    EndIf
+
+    Local $sDlgTitle = _Ternary($sPlatform = "telegram", _T("Share on Telegram"), _T("Share on Facebook"))
+
+    Local $hShareGui = GUICreate($sDlgTitle, 340, 195, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU), $WS_EX_TOPMOST, $hParent)
+    GUISetBkColor($COLOR_BLUE)
+
+    GUICtrlCreateLabel(_T("Choose the type of link to share:"), 10, 15, 320, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+
+    Local $btnStandard = GUICtrlCreateButton(_T("&Standard link"), 20, 45, 300, 32)
+    GUICtrlSetState(-1, $GUI_DEFBUTTON)
+    Local $btnShort = GUICtrlCreateButton(_T("S&hort link"), 20, 85, 300, 32)
+    Local $btnCancel = GUICtrlCreateButton(_T("&Cancel"), 110, 135, 120, 32)
+
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $aAccel[1][2] = [["{ESC}", $hDummyEsc]]
+    GUISetAccelerators($aAccel, $hShareGui)
+
+    GUISetState(@SW_SHOW, $hShareGui)
+    _AllowUIPI($hShareGui)
+    ControlFocus($hShareGui, "", $btnStandard)
+
+    Local $nMsg, $sLink = ""
+    While 1
+        $nMsg = _GuiMsg($hShareGui)
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnCancel, $hDummyEsc
+                ExitLoop
+            Case $btnStandard
+                $sLink = _VideoLink($sID)
+                ExitLoop
+            Case $btnShort
+                $sLink = _VideoShortLink($sID)
+                ExitLoop
+        EndSwitch
+    WEnd
+
+    GUIDelete($hShareGui)
+    If IsHWnd($hParent) Then
+        GUISwitch($hParent)
+        WinActivate($hParent)
+    EndIf
+
+    If $sLink = "" Then Return
+    _Share_Open($sPlatform, $sLink, $sTitle)
+EndFunc
+
+; Opens the share page of the platform for the given link
+Func _Share_Open($sPlatform, $sLink, $sTitle = "")
+    Switch $sPlatform
+        Case "telegram"
+            ShellExecute("https://t.me/share/url?url=" & _URLEncode($sLink) & "&text=" & _URLEncode($sTitle))
+        Case "facebook"
+            ShellExecute("https://www.facebook.com/sharer/sharer.php?u=" & _URLEncode($sLink))
+    EndSwitch
 EndFunc
 
 
@@ -3553,7 +3799,7 @@ EndFunc
 
 Func _Action_OpenBrowser($iIndex)
     If $iIndex < 0 Or $iIndex >= UBound($aSearchIds) - 1 Then Return
-    ShellExecute("https://www.youtube.com/watch?v=" & $aSearchIds[$iIndex + 1])
+    ShellExecute(_VideoLink($aSearchIds[$iIndex + 1]))
 EndFunc
 
 Func _Action_ShowDescription($iIndex)
@@ -3607,13 +3853,19 @@ Func _Action_ShowComments($iIndex)
 
     ; Directly run comments.exe with the YouTube URL.
     ; comments.exe already handles fetching comments internally.
-    Local $sUrl = "https://www.youtube.com/watch?v=" & $sID
+    Local $sUrl = _VideoLink($sID)
     Run('"' & $COMMENTS_EXE_PATH & '" "' & $sUrl & '"')
 EndFunc
 
 Func _Action_GoChannel($iIndex)
     If $iIndex < 0 Or $iIndex >= UBound($aSearchIds) - 1 Then Return
     Local $sID = $aSearchIds[$iIndex + 1]
+
+    ; SoundCloud: the "channel" is the page of the artist
+    If _IsSoundCloudLink($sID) Then
+        ShellExecute(_SC_ArtistUrl($sID))
+        Return
+    EndIf
 
     Local $hLoading = GUICreate(_T("Working..."), 250, 80, -1, -1, BitOR($WS_POPUP, $WS_BORDER), BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW), $hResultsGui)
     GUICtrlCreateLabel(_T("Fetching channel information..."), 10, 25, 230, 20, $SS_CENTER)
@@ -3769,6 +4021,10 @@ EndFunc
 
 ; "Go to channel" for a song of the queue (same as the one of the search results, but works from an ID)
 Func _Queue_GoChannel($sID, $hParent)
+    If _IsSoundCloudLink($sID) Then
+        ShellExecute(_SC_ArtistUrl($sID))
+        Return
+    EndIf
     Local $hLoading = GUICreate(_T("Working..."), 250, 80, -1, -1, BitOR($WS_POPUP, $WS_BORDER), BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW), $hParent)
     GUICtrlCreateLabel(_T("Fetching channel information..."), 10, 25, 230, 20, $SS_CENTER)
     GUISetBkColor(0xFFFFFF, $hLoading)
@@ -3839,10 +4095,9 @@ Func _Queue_ContextMenu($idList, $hQueueGui, $hParent, $bAllowPlay)
         Case 1004
             _Queue_GoChannel($sID, $hQueueGui)
         Case 1005
-            ShellExecute("https://www.youtube.com/watch?v=" & $sID)
+            ShellExecute(_VideoLink($sID))
         Case 1006
-            ClipPut("https://www.youtube.com/watch?v=" & $sID)
-            MsgBox(64, _T("Info"), _T("Link copied to clipboard!"), 0, $hQueueGui)
+            _ShowCopyLinkDialog($sID, $hQueueGui)
         Case 1009
             _ShowSongLyrics($sTitle, $hQueueGui, $sID)
         Case 1015
@@ -3866,9 +4121,9 @@ Func _Queue_ContextMenu($idList, $hQueueGui, $hParent, $bAllowPlay)
                 _AddFavorite($sID, $sTitle)
             EndIf
         Case 1011 ; Telegram
-            ShellExecute("https://t.me/share/url?url=" & _URLEncode("https://www.youtube.com/watch?v=" & $sID) & "&text=" & _URLEncode($sTitle))
+            _ShowShareLinkDialog("telegram", $sID, $sTitle, $hQueueGui)
         Case 1012 ; Facebook
-            ShellExecute("https://www.facebook.com/sharer/sharer.php?u=" & _URLEncode("https://www.youtube.com/watch?v=" & $sID))
+            _ShowShareLinkDialog("facebook", $sID, $sTitle, $hQueueGui)
     EndSwitch
     Return ""
 EndFunc
@@ -4142,7 +4397,7 @@ Func _DQ_RunDownloads($hParent, $sFmtTxt, $sBitrate, $iNameMode)
 
         GUICtrlSetData($lblItem, _TF("Downloading {1} of {2}: {3}", $k, $iTotal, $sTitle))
         _NVDA_Speak(_TF("Downloading item {1} of {2}", $k, $iTotal))
-        Local $sCmd = $YT_DLP_EXE & ' --newline ' & $sFmt & ' -P "' & $sPath & '" --ffmpeg-location "' & @ScriptDir & '\lib" -o "' & $sOutTemplate & '" -- "https://www.youtube.com/watch?v=' & $sID & '"'
+        Local $sCmd = $YT_DLP_EXE & ' --newline ' & $sFmt & ' -P "' & $sPath & '" --ffmpeg-location "' & @ScriptDir & '\lib" -o "' & $sOutTemplate & '" -- "' & _VideoLink($sID) & '"'
         Local $sBefore = _ListFilesRecursive($sPath)
         Local $iPid = Run($sCmd, @ScriptDir, @SW_HIDE, $STDOUT_CHILD + $STDERR_CHILD)
         Local $iStart = TimerInit()
@@ -4473,6 +4728,7 @@ Func _PlayLoop($iCurrentIndex, $bAudioOnly = False, $bQueueOnly = False)
 
             If IsHWnd($hLoading) Then GUIDelete($hLoading)
             Local $sErrMsg = _T("Error 153: YouTube blocked the link extraction request.")
+            If _IsWebLink($sID) Then $sErrMsg = _T("Cannot get the stream of this item from its website.")
             If StringInStr($sErr, "sign in") Or StringInStr($sErr, "confirm you are not a bot") Then
                 $sErrMsg &= " " & _T("YouTube requires user verification.")
             ElseIf StringInStr($sErr, "age restricted") Then
@@ -4519,7 +4775,7 @@ EndFunc
 ; thuộc sở hữu (owned) của cửa sổ đó, nhờ vậy Windows sẽ tự động kích hoạt lại đúng cửa
 ; sổ gốc khi hộp thoại này đóng, thay vì người dùng bị trôi dạt sang một giao diện khác.
 Func _ShowDownloadDialog($sID, $sTitle, $hParentGui = 0)
-    Local $sUrl = "https://www.youtube.com/watch?v=" & $sID
+    Local $sUrl = _VideoLink($sID)
     Local $hDLGui = GUICreate(_T("Download Options"), 400, 200, -1, -1, -1, -1, $hParentGui)
     GUISetBkColor($COLOR_BLUE)
 
@@ -4642,6 +4898,7 @@ EndFunc
 ;  - lấy tiêu đề và link stream trong CÙNG MỘT lần gọi yt-dlp (trước đây phải gọi hai lần liên tiếp).
 Func _PlayYoutubeLink($url, $bAudioOnly = False)
     $url = StringStripWS($url, 3)
+    If _IsSoundCloudLink($url) Then $bAudioOnly = True ; SoundCloud has no video
 
     ; Update existing player info or show status if GUI exists
     Local $hLoading = 0
@@ -4722,11 +4979,13 @@ Func _PlayYoutubeLink($url, $bAudioOnly = False)
     If $sDLink <> "" Then
         _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
         Local $id = _GetYoutubeID($url)
+        If $id = "" And _IsWebLink($url) Then $id = $url ; other sites: the full link is the id (like the search results)
         Local $sPlayAct = ""
+        Local $bSC = _IsSoundCloudLink($url) ; the window title (read by NVDA+T) names the site
         If $bAudioOnly Then
-            If $sTitle = "" Then $sTitle = _T("YouTube Audio")
+            If $sTitle = "" Then $sTitle = _Ternary($bSC, _T("SoundCloud Audio"), _T("YouTube Audio"))
             _AddHistory($id, $sTitle)
-            $sPlayAct = _PlayInternal($sDLink, _T("YouTube Audio Player"), True, $hLoading, False, $id)
+            $sPlayAct = _PlayInternal($sDLink, _Ternary($bSC, _T("SoundCloud Audio Player"), _T("YouTube Audio Player")), True, $hLoading, False, $id)
         Else
             If $sTitle = "" Then $sTitle = _T("YouTube Video")
             _AddHistory($id, $sTitle)
@@ -4951,8 +5210,10 @@ Func _PlayLocalFolder($iIndex)
     $g_bLocalPlaylistMode = False
 EndFunc
 
-Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAutoPlayToggle = False, $sID = "", $bLocalFile = False)
+Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAutoPlayToggle = False, $sID = "", $bLocalFile = False, $bPodcast = False)
     $g_bTrackEnded = False
+    Local $bPod = $bPodcast
+    If $bPod Then $bLocalFile = True ; podcast episodes use the same guards as local audio files (no YouTube-only features)
     Local $iWidth = 640, $iHeight = 360
     Local $aHelpLines = 0
     If $bAudioOnly Then
@@ -4985,10 +5246,39 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
 
         ; Tạo Menu Bar - Không dùng biến Local để tránh nhầm lẫn, dùng biến Global đã khai báo
         ; (Local audio files: no Options menu bar for this feature)
-        If Not $bLocalFile Then
+        $menu_item_chapters = -1
+        $menu_item_voice = -1
+        If $bPod Then
+            Local $hMenu_PodOptions = GUICtrlCreateMenu(_T("&Options"))
+            $menu_item_copy = GUICtrlCreateMenuItem(_T("Copy Lin&k..."), $hMenu_PodOptions)
+            $menu_item_goto = GUICtrlCreateMenuItem(_T("&Go to Time... (Ctrl+G)"), $hMenu_PodOptions)
+            $menu_item_chapters = GUICtrlCreateMenuItem(_T("Chapters... (H)"), $hMenu_PodOptions)
+            $menu_item_voice = GUICtrlCreateMenuItem(_T("Voice enhancement... (Ctrl+Shift+V)"), $hMenu_PodOptions)
+            GUICtrlCreateMenuItem("", $hMenu_PodOptions) ; Separator
+            $menu_item_sleeptimer = GUICtrlCreateMenuItem(_T("Sleep T&imer..."), $hMenu_PodOptions)
+            $menu_item_download = -1
+            $menu_item_channel = -1
+            $menu_item_yt_sub = -1
+            $menu_item_browser = -1
+            $menu_share_telegram = -1
+            $menu_share_facebook = -1
+            $menu_item_desc = -1
+            $menu_item_comments = -1
+            $menu_item_transcript = -1
+            $menu_item_lyrics = -1
+            $menu_item_queue_add = -1
+            $menu_item_queue_view = -1
+            $menu_item_dq_add = -1
+            $menu_item_fav = -1
+            $menu_item_add_col = -1
+            $menu_item_remove_col = -1
+            $menu_item_fileinfo = -1
+            _GUICtrlMenu_DrawMenuBar($hPlayGui)
+        ElseIf Not $bLocalFile Then
             Local $hMenu_Options = GUICtrlCreateMenu(_T("&Options"))
             $menu_item_download = GUICtrlCreateMenuItem(_T("&Download..."), $hMenu_Options)
             $menu_item_channel = GUICtrlCreateMenuItem(_T("Go to &Channel..."), $hMenu_Options)
+            $menu_item_yt_sub = GUICtrlCreateMenuItem(_T("S&ubscribe to Channel..."), $hMenu_Options)
             $menu_item_browser = GUICtrlCreateMenuItem(_T("Open in &Browser..."), $hMenu_Options)
             $menu_item_copy = GUICtrlCreateMenuItem(_T("Copy Lin&k..."), $hMenu_Options)
 
@@ -5020,6 +5310,8 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
 
             ; NEW FEATURE Tính năng Sleep Timer vào Menu
             GUICtrlCreateMenuItem("", $hMenu_Options) ; Separator
+            $menu_item_chapters = GUICtrlCreateMenuItem(_T("Chapters... (H)"), $hMenu_Options)
+            $menu_item_voice = GUICtrlCreateMenuItem(_T("Voice enhancement... (Ctrl+Shift+V)"), $hMenu_Options)
             $menu_item_sleeptimer = GUICtrlCreateMenuItem(_T("Sleep T&imer..."), $hMenu_Options)
 
             ; Vẽ lại thanh menu để đảm bảo hiển thị
@@ -5027,6 +5319,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         Else
             $menu_item_download = -1
             $menu_item_channel = -1
+            $menu_item_yt_sub = -1
             $menu_item_browser = -1
             $menu_item_copy = -1
             $menu_share_telegram = -1
@@ -5165,6 +5458,10 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         $hDummyCtrlQ = GUICtrlCreateDummy()
         $hDummyCtrlShiftQ = GUICtrlCreateDummy()
         $hDummyEq = GUICtrlCreateDummy() ; Ctrl+E: Equalizer
+        $hDummyChapNext = GUICtrlCreateDummy() ; Page Down: next chapter
+        $hDummyChapPrev = GUICtrlCreateDummy() ; Page Up: previous chapter
+        $hDummyChapList = GUICtrlCreateDummy() ; H: list of chapters
+        $hDummyVoice = GUICtrlCreateDummy() ; Ctrl+Shift+V: voice enhancement
 
         ; Phim co dinh (1-9 = nhay den 10%-90%, phim Menu chuot phai bi chan) + phim tuy chinh (Settings > Shortcuts)
         Local $aFixedPlay[11][2] = [ _
@@ -5192,7 +5489,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
     WEnd
 
     ; Use direct DLL calls to play music (Prevents NVDA from reading percentage)
-    If $bLocalFile Then
+    If $bLocalFile And Not $bPod Then
         _VLC_Direct_Play(_PathToFileURI($sUrl))
     Else
         _VLC_Direct_Play($sUrl)
@@ -5211,6 +5508,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
 
     ; --- Logic Tiếp tục xem (Continue Watching) ---
     Local $bResumeOn = $bLocalFile ? $g_bResumeLocal : $g_bContinueWatching
+    If $bPod Then $bResumeOn = True ; podcast episodes always remember their position
     If $bResumeOn Then
         Local $iSavedTime = $bLocalFile ? _LocalPos_Get($sID) : _GetPlaybackPosition($sID)
         If $iSavedTime > 0 Then
@@ -5238,6 +5536,15 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
 
     If Not $g_bRepeat Then GUICtrlSetData($g_lblRepeat, _T("Repeat: OFF"))
     If $g_bRepeat Then GUICtrlSetData($g_lblRepeat, _T("Repeat: ON"))
+
+    ; Chapters (version 3.3): YouTube / other sites with yt-dlp, local files with ffmpeg. Podcast chapters are set by the podcast window.
+    If Not $bPod Then
+        If $bLocalFile Then
+            _Chap_StartFile($sUrl)
+        Else
+            _Chap_StartOnline($sID)
+        EndIf
+    EndIf
 
     Local $sAction = ""
     Local $bLoaded = False
@@ -5267,8 +5574,14 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                 Else
                     _ShowDownloadDialog($sID, $sTitle, $hPlayGui)
                 EndIf
+            Case $menu_item_yt_sub
+                If Not $bLocalFile And Not _IsWebLink($sID) Then _YTS_SubscribeFromItem($sID, $sTitle, "video", $hPlayGui)
             Case $menu_item_channel, $hDummyAltG
                 ; Removed for local audio files (Listen to Audio File interface)
+                If Not $bLocalFile And _IsSoundCloudLink($sID) Then
+                    ShellExecute(_SC_ArtistUrl($sID))
+                    ContinueLoop
+                EndIf
                 If Not $bLocalFile Then
                 Local $hLoadingTmp = GUICreate(_T("Working..."), 250, 80, -1, -1, BitOR($WS_POPUP, $WS_BORDER), BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW), $hPlayGui)
                 GUICtrlCreateLabel(_T("Fetching channel information..."), 10, 25, 230, 20, $SS_CENTER)
@@ -5295,27 +5608,29 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
             Case $menu_item_browser, $hDummyAltB
                 ; Removed for local audio files (Listen to Audio File interface)
                 If Not $bLocalFile Then
-                    ShellExecute("https://www.youtube.com/watch?v=" & $sID)
+                    ShellExecute(_VideoLink($sID))
                 EndIf
             Case $menu_item_copy
-                If $bLocalFile Then
+                If $bPod Then
+                    ClipPut($sUrl)
+                    _ReportStatus(_T("Link copied to clipboard"))
+                ElseIf $bLocalFile Then
                     ClipPut($sUrl)
                     MsgBox(64, _T("Info"), _T("File path copied to clipboard!"))
                 Else
-                    ClipPut("https://www.youtube.com/watch?v=" & $sID)
-                    MsgBox(64, _T("Info"), _T("Link copied to clipboard!"))
+                    _ShowCopyLinkDialog($sID, $hPlayGui)
                 EndIf
             Case $menu_share_telegram
                 If $bLocalFile Then
                     _ReportStatus(_T("Not available for local audio files."))
                 Else
-                    ShellExecute("https://t.me/share/url?url=" & _URLEncode("https://www.youtube.com/watch?v=" & $sID) & "&text=" & _URLEncode($sTitle))
+                    _ShowShareLinkDialog("telegram", $sID, $sTitle, $hPlayGui)
                 EndIf
             Case $menu_share_facebook
                 If $bLocalFile Then
                     _ReportStatus(_T("Not available for local audio files."))
                 Else
-                    ShellExecute("https://www.facebook.com/sharer/sharer.php?u=" & _URLEncode("https://www.youtube.com/watch?v=" & $sID))
+                    _ShowShareLinkDialog("facebook", $sID, $sTitle, $hPlayGui)
                 EndIf
             Case $menu_item_desc, $hDummyCtrlShiftD
                 ; Removed for local audio files (Listen to Audio File interface)
@@ -5348,13 +5663,13 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                 If $bLocalFile Then
                     _ReportStatus(_T("Not available for local audio files."))
                 Else
-                    Run('"' & $COMMENTS_EXE_PATH & '" "https://www.youtube.com/watch?v=' & $sID & '"')
+                    Run('"' & $COMMENTS_EXE_PATH & '" "' & _VideoLink($sID) & '"')
                 EndIf
             Case $menu_item_transcript, $hDummyCtrlAltT
                 If $bLocalFile Then
                     _ReportStatus(_T("Not available for local audio files."))
                 Else
-                    _ShowYoutubeTranscript("https://www.youtube.com/watch?v=" & $sID, $hPlayGui)
+                    _ShowYoutubeTranscript(_VideoLink($sID), $hPlayGui)
                 EndIf
             Case $menu_item_lyrics, $hDummyCtrlAltL
                 If $bLocalFile Then
@@ -5408,7 +5723,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                     ; Local audio file: announce info inline (screen-reader friendly),
                     ; e.g. "Song Title.mp3 ;  2 seconds of 4 minutes  53 seconds;  playing;"
                     Local $aNameI = StringRegExp($sUrl, "([^\\\/]+)$", 3)
-                    Local $sFileNameI = (UBound($aNameI) > 0) ? $aNameI[0] : $sTitle
+                    Local $sFileNameI = (UBound($aNameI) > 0 And Not $bPod) ? $aNameI[0] : $sTitle
                     Local $iStateI = _VLC_Direct_GetState()
                     Local $sPlayStateI = ($iStateI = 3) ? "playing" : "paused"
                     Local $sInfoMsg = _TF("{1} ;  {2} of {3};  {4};", $sFileNameI, _FormatTimeSpoken($fCurI), _FormatTimeSpoken($fLenI), $sPlayStateI)
@@ -5432,8 +5747,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
             Case $hDummyCtrlK
                 ; Removed for local audio files (Listen to Audio File interface)
                 If Not $bLocalFile Then
-                    ClipPut("https://www.youtube.com/watch?v=" & $sID)
-                    _ReportStatus(_T("Link copied to clipboard"))
+                    _ShowCopyLinkDialog($sID, $hPlayGui)
                 EndIf
 
             Case $hDummyCtrlC
@@ -5448,7 +5762,15 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                 ; Nếu chưa đặt điểm [ thì tự động lấy thời gian hiện tại
                 Local $iStart = _Ternary(($g_fSelectionStart <> -1), Int($g_fSelectionStart), Int($fPos))
 
-                If $g_fSelectionEnd <> -1 Then
+                If _IsWebLink($sCleanID) Then
+                    ; Other sites (SoundCloud...): no range links, the link opens at the start time (#t=m:ss)
+                    $sFinalLink = $sCleanID & "#t=" & _SC_TimeFragment($iStart)
+                    If $g_fSelectionStart <> -1 Then
+                        _ReportStatus(_TF("Link from start point copied: {1}", _FormatTime($iStart)))
+                    Else
+                        _ReportStatus(_TF("Current time link copied: {1}", _FormatTime($iStart)))
+                    EndIf
+                ElseIf $g_fSelectionEnd <> -1 Then
                     Local $iEnd = Int($g_fSelectionEnd)
                     ; Đảo ngược nếu điểm kết thúc nhỏ hơn điểm bắt đầu
                     If $iEnd < $iStart Then
@@ -5473,7 +5795,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
 
             Case $hDummyCtrlShiftC
                 If Not $bLocalFile Then
-                    Run('"' & $COMMENTS_EXE_PATH & '" "https://www.youtube.com/watch?v=' & $sID & '"')
+                    Run('"' & $COMMENTS_EXE_PATH & '" "' & _VideoLink($sID) & '"')
                 EndIf
 
             Case $hDummyBracketLeft
@@ -5627,7 +5949,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
                 ; _AddSingleAudioFile() ignores the "NEXT" return value, pressing
                 ; Shift+N while listening to a single local file silently closed
                 ; the player instead of doing nothing.
-                If Not $bLocalFile Then
+                If Not $bLocalFile Or $bPod Then
                     $sAction = "NEXT"
                     ExitLoop
                 EndIf
@@ -5635,7 +5957,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
             Case $hDummyShiftB
                 ; Disabled for local audio files (Listen to Audio File interface).
                 ; Same issue as Shift+N above - closed the player unexpectedly.
-                If Not $bLocalFile Then
+                If Not $bLocalFile Or $bPod Then
                     $sAction = "BACK"
                     ExitLoop
                 EndIf
@@ -5773,6 +6095,20 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
             Case $hDummyEq
                 _ShowEqualizerDialog($hPlayGui)
 
+            Case $menu_item_chapters, $hDummyChapList
+                _ShowChaptersDialog($hPlayGui)
+
+            Case $hDummyChapNext
+                _Chap_Step(1)
+
+            Case $hDummyChapPrev
+                _Chap_Step(-1)
+
+            Case $menu_item_voice, $hDummyVoice
+                _Voice_Cycle()
+                _Voice_Restart($sUrl, ($bLocalFile And Not $bPod))
+                _ReportStatus(_TF("Voice enhancement: {1}", _Voice_Name($g_iVoiceMode)))
+
             Case $hDummyG
                 _ShowGoToTime()
 
@@ -5795,7 +6131,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         ; --- Playback state checks: run on EVERY loop tick (even when idle,
         ; i.e. $nMsg = 0), so the loading dialog closes and end-of-track is
         ; detected promptly without needing a keypress first ---
-        If $bLocalFile And $g_bResumeLocal And TimerDiff($hPosSaveTimer) >= 10000 Then
+        If $bLocalFile And ($g_bResumeLocal Or $bPod) And TimerDiff($hPosSaveTimer) >= 10000 Then
             $hPosSaveTimer = TimerInit()
             If _VLC_Direct_GetState() = 3 And Not $g_bTrackEnded Then
                 Local $iPosNow = _VLC_Direct_GetTime()
@@ -5806,6 +6142,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
         ; Refresh the on-screen state / position line (twice a second, redraws only when the text changed)
         If TimerDiff($hInfoTimer) >= 500 Then
             $hInfoTimer = TimerInit()
+            _Chap_Tick() ; loads the chapters and announces a new chapter
             _UpdatePlayerTimeLabel()
             _VLC_StereoMode_Retry()
             If $g_iPanStep <> 0 Or $g_bAutoPan Or _StereoModeUsesSession() Then _Pan_Sync() ; nhac moi bat dau / VLC doi session -> gan lai pan (toi da 1 lan/giay)
@@ -5850,7 +6187,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
     ; Lưu vị trí trước khi thoát (Save position before exiting)
     If $bLocalFile Then
         ; Audio cuc bo: nho vi tri tung file (xoa neu bai da nghe het)
-        If $g_bResumeLocal Then
+        If $g_bResumeLocal Or $bPod Then
             If $g_bTrackEnded Then
                 _LocalPos_Clear($sID)
             Else
@@ -5869,6 +6206,7 @@ Func _PlayInternal($sUrl, $sTitle, $bAudioOnly = False, $hLoading = 0, $allowAut
     ; Cleanup
     DllCall("winmm.dll", "int", "PlaySoundW", "ptr", 0, "ptr", 0, "dword", 0) ; Stop loading sound if still playing
     _VLC_Direct_Stop()
+    _Chap_Reset()
     ; Roi khoi trinh phat -> pan ve 0.0 va giai phong (chuyen bai NEXT/BACK/... thi giu nguyen pan)
     If $sAction = "CLOSE" Or $sAction = "STOP" Or $sAction = "FINISHED" Then _Pan_Reset()
     If IsHWnd($hPlayGui) Then GUIDelete($hPlayGui)
@@ -5922,6 +6260,7 @@ Func _GetPlayerHelpLines($bLocalFile, $bAllowAutoPlayToggle)
             $sHelp &= _HKL("N: Auto-play next on / off", "next") & @CRLF & _HKL("Shift+N / Shift+B: Next / Previous video", "force_next|force_prev") & @CRLF
         EndIf
     EndIf
+    $sHelp &= _HKL("Page Up / Page Down: Previous / Next chapter", "chapter_prev|chapter_next") & @CRLF & _HKL("H: List of chapters", "chapters") & @CRLF & _HKL("Ctrl+Shift+V: Voice enhancement", "voice") & @CRLF
     $sHelp &= _HKL("Esc: Close the player", "close_player") & @CRLF & _HKL("Ctrl+W: Exit the application", "exit_app")
     Return StringSplit($sHelp, @LF, 2) ; 2 = no count element, 0-based array
 EndFunc
@@ -7629,15 +7968,22 @@ EndFunc
 
 Func _AutoDetectClipboardLink()
     Local $clip = ClipGet()
-    If Not (StringInStr($clip, "youtube.com") Or StringInStr($clip, "youtu.be")) Then Return
+    Local $bYT = (StringInStr($clip, "youtube.com") Or StringInStr($clip, "youtu.be"))
+    Local $sSC = ""
+    If Not $bYT Then
+        Local $aSC = StringRegExp($clip, "(?i)(https?://(?:[a-z0-9-]+\.)?(?:soundcloud\.com|snd\.sc)/\S+)", 3)
+        If IsArray($aSC) Then $sSC = $aSC[0]
+    EndIf
+    If Not $bYT And $sSC = "" Then Return
 
     ; Check if focus is in an edit box (per requirement)
     Local $focus = ControlGetFocus($mainform)
     If StringInStr($focus, "Edit") Then Return
 
+    Local $sSite = $bYT ? "YouTube" : "SoundCloud"
     Local $hAutoGui = GUICreate(_T("Link detected"), 300, 150, -1, -1, BitOR($WS_CAPTION, $WS_POPUP, $WS_SYSMENU), -1, $mainform)
     GUISetBkColor(0xFFFFFF)
-    GUICtrlCreateLabel(_T("A YouTube link was found in your clipboard. What would you like to do?"), 10, 10, 280, 40)
+    GUICtrlCreateLabel(_TF("A {1} link was found in your clipboard. What would you like to do?", $sSite), 10, 10, 280, 40)
 
     Local $btn_Play = GUICtrlCreateButton(_T("Play"), 10, 60, 135, 30)
     Local $btn_DL = GUICtrlCreateButton(_T("Download"), 155, 60, 135, 30)
@@ -7653,16 +7999,25 @@ Func _AutoDetectClipboardLink()
                 ExitLoop
             Case $nMsg = $btn_Play
                 GUIDelete($hAutoGui)
-                playmedia($clip)
+                If $bYT Then
+                    playmedia($clip)
+                Else
+                    playaudio($sSC) ; SoundCloud has no video: play it as audio
+                EndIf
                 ExitLoop
             Case $nMsg = $btn_DL
                 GUIDelete($hAutoGui)
-                Local $id = _GetYoutubeID($clip)
-                If $id <> "" Then
-                    Local $sTitle = _GetYoutubeTitle($clip)
-                    _ShowDownloadDialog($id, $sTitle)
+                If $bYT Then
+                    Local $id = _GetYoutubeID($clip)
+                    If $id <> "" Then
+                        Local $sTitle = _GetYoutubeTitle($clip)
+                        _ShowDownloadDialog($id, $sTitle)
+                    Else
+                        MsgBox(16, _T("Error"), _T("Could not extract video ID from link."))
+                    EndIf
                 Else
-                    MsgBox(16, _T("Error"), _T("Could not extract video ID from link."))
+                    ; links of other sites are their own id
+                    _ShowDownloadDialog($sSC, _GetYoutubeTitle($sSC))
                 EndIf
                 ExitLoop
         EndSelect
@@ -8347,13 +8702,13 @@ EndFunc
 Func _ShowSettings()
     ; Lay danh sach thiet bi am thanh TRUOC khi tao cua so (buoc nay cham, de bi tac vu ngam chen vao giua)
     Local $aAudioDevices = _VLC_GetAudioOutputs()
-    $g_hSettingsGui = GUICreate(_T("Settings"), 450, 610, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU, $WS_POPUP))
+    $g_hSettingsGui = GUICreate(_T("Settings"), 450, 680, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU, $WS_POPUP))
     $g_iSettingsHelpCount = 0
     GUISwitch($g_hSettingsGui)
     GUISetBkColor($COLOR_BLUE)
     GUISetFont(9, 400, 0, "Segoe UI")
 
-    $g_hSettingsTab = GUICtrlCreateTab(10, 10, 430, 525)
+    $g_hSettingsTab = GUICtrlCreateTab(10, 10, 430, 595)
 
     $g_hSettingsDummyNext = GUICtrlCreateDummy()
     $g_hSettingsDummyPrev = GUICtrlCreateDummy()
@@ -8392,7 +8747,7 @@ Func _ShowSettings()
     If $g_bAutoStart Then GUICtrlSetState(-1, $GUI_CHECKED)
     GUICtrlSetColor(-1, 0xFFFFFF)
 
-    Local $chk_AutoDetect = GUICtrlCreateCheckbox(_T("Automatically detect YouTube links in clipboard on launch"), 30, 170, 380, 20)
+    Local $chk_AutoDetect = GUICtrlCreateCheckbox(_T("Automatically detect YouTube and SoundCloud links in clipboard on launch"), 30, 170, 380, 20)
     If $g_bAutoDetectLink Then GUICtrlSetState(-1, $GUI_CHECKED)
     GUICtrlSetColor(-1, 0xFFFFFF)
 
@@ -8414,6 +8769,10 @@ Func _ShowSettings()
 
     Local $chk_ShowLicenseConfirm = GUICtrlCreateCheckbox(_T("Show license confirmation when the application starts"), 30, 320, 380, 20)
     If $g_bShowLicenseConfirm Then GUICtrlSetState(-1, $GUI_CHECKED)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+
+    Local $chk_CheckSubs = GUICtrlCreateCheckbox(_T("Check subscriptions for new content on startup"), 30, 350, 380, 20)
+    If $g_bCheckSubsOnStart Then GUICtrlSetState(-1, $GUI_CHECKED)
     GUICtrlSetColor(-1, 0xFFFFFF)
 
     ; --- Tab Player ---
@@ -8535,6 +8894,18 @@ Func _ShowSettings()
         GUICtrlSetState($inp_AutoPanPeriod, BitOR($GUI_HIDE, $GUI_DISABLE))
     EndIf
 
+    ; Version 3.3: voice enhancement and chapter announcements
+    GUICtrlCreateLabel(_T("Voice enhancement:"), 30, 552, 140, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $cbo_Voice = GUICtrlCreateCombo("", 180, 548, 230, 20, $CBS_DROPDOWNLIST)
+    GUICtrlSetTip(-1, _T("Makes speech clearer and evens out loud and quiet voices. Good for podcasts and lectures."))
+    GUICtrlSetData(-1, _TL("Off|Light|Strong"))
+    _GUICtrlComboBox_SetCurSel($cbo_Voice, $g_iVoiceMode)
+
+    Local $chk_AnnounceChapters = GUICtrlCreateCheckbox(_T("Announce the chapter title when a new chapter starts"), 30, 580, 380, 20)
+    If $g_bAnnounceChapters Then GUICtrlSetState(-1, $GUI_CHECKED)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+
     ; --- Tab Download ---
     $aTabItems[2] = GUICtrlCreateTabItem(_T("Download"))
     GUICtrlCreateLabel(_T("Download Settings"), 20, 50, 410, 20)
@@ -8619,11 +8990,16 @@ Func _ShowSettings()
     If $g_bTypingSoundEnabled Then GUICtrlSetState(-1, $GUI_CHECKED)
     GUICtrlSetColor(-1, 0xFFFFFF)
 
-    GUICtrlCreateLabel(_T("select typing sound:"), 30, 140, 150, 20)
+    Local $lbl_TypingSoundSet = GUICtrlCreateLabel(_T("select typing sound:"), 30, 140, 150, 20)
     GUICtrlSetColor(-1, 0xFFFFFF)
     Local $cbo_TypingSoundSet = GUICtrlCreateCombo("", 180, 135, 230, 20, $CBS_DROPDOWNLIST)
     GUICtrlSetTip(-1, _T("Select the typing sound set. The list is in alphabetical order. Use the arrow keys to browse"))
     GUICtrlSetData(-1, "1blueSwitch|2redSwitch|3brownSwitche|iPhone|Samsung_Galaxy|VDH_keyboard1|VDH_keyboard2", $g_sTypingSoundSet)
+    ; The list of sounds exists only while typing sounds are on (kept in step by _Settings_SyncTypingSet)
+    If Not $g_bTypingSoundEnabled Then
+        GUICtrlSetState($lbl_TypingSoundSet, BitOR($GUI_HIDE, $GUI_DISABLE))
+        GUICtrlSetState($cbo_TypingSoundSet, BitOR($GUI_HIDE, $GUI_DISABLE))
+    EndIf
 
     ; --- Tab Data ---
     $aTabItems[5] = GUICtrlCreateTabItem(_T("Data"))
@@ -8654,19 +9030,20 @@ Func _ShowSettings()
 
     GUICtrlCreateTabItem("") ; End Tab Control
 
-    Local $btn_Save = GUICtrlCreateButton(_T("Ok"), 120, 540, 100, 35)
-    Local $btn_Cancel = GUICtrlCreateButton(_T("Cancel"), 230, 540, 100, 35)
+    Local $btn_Save = GUICtrlCreateButton(_T("Ok"), 120, 612, 100, 35)
+    Local $btn_Cancel = GUICtrlCreateButton(_T("Cancel"), 230, 612, 100, 35)
 
     ; F1 trong Settings: đọc mô tả của điều khiển đang focus
     _Settings_AddHelp($g_hSettingsTab, "Use the Left and Right Arrow keys, or Ctrl+Tab and Ctrl+Shift+Tab, to switch between the settings tabs. Press Tab to move to the controls of the selected tab.")
     _Settings_AddHelp($cbo_Language, "Chooses the language of the application. A different choice takes effect after the application restarts.")
     _Settings_AddHelp($chk_AutoUpdate, "Checks for a newer version of the application each time it starts.")
     _Settings_AddHelp($chk_AutoStart, "Starts the application automatically each time you sign in to Windows.")
-    _Settings_AddHelp($chk_AutoDetect, "Looks for a YouTube link in the clipboard when the application starts.")
+    _Settings_AddHelp($chk_AutoDetect, "Looks for a YouTube or SoundCloud link in the clipboard when the application starts.")
     _Settings_AddHelp($chk_AutoUpdateYTDLP, "Checks for a newer version of yt-dlp, the component that fetches video and audio from websites, each time the application starts.")
     _Settings_AddHelp($chk_MuteAppSounds, "When selected, all sounds of the application from the sounds folder are silenced. Typing sounds are not affected, they are controlled by their own option in the Search tab. Clear this option to hear the sounds again.")
     _Settings_AddHelp($chk_ShowLogo, "When selected, the logo and its sound are played each time the application starts. When cleared, only the door sound is played and the application opens straight away.")
     _Settings_AddHelp($chk_ShowLicenseConfirm, "When selected, the license is confirmed each time the application starts: the door sound is played and you hear that the license is accepted. When cleared, the door sound is not played and the application opens straight away.")
+    _Settings_AddHelp($chk_CheckSubs, "When selected, each time the application starts it quietly checks your podcast and YouTube subscriptions. If there are new episodes or videos you hear a sound and a short announcement; if there is nothing new, nothing happens. When cleared, nothing is checked at startup and you check by hand with the Check for new episodes and Check for new videos buttons in My subscriptions.")
     _Settings_AddHelp($cbo_OutputDevice, "Chooses the audio device used by the Player and the Radio. The new device is used as soon as you press OK.")
     _Settings_AddHelp($chk_SkipSilence, "Skips over silent gaps in a track while it plays. Recommended only for music.")
     _Settings_AddHelp($cbo_AnnouncementMode, "Chooses what is announced when you seek: nothing, the position as a percentage, or the position as a time.")
@@ -8681,6 +9058,8 @@ Func _ShowSettings()
     _Settings_AddHelp($cbo_StereoMode, "Chooses how the left and right audio channels are played: normal stereo, swapped channels, only the left ear, only the right ear, or mono (both channels mixed together). The change is applied to the music immediately.")
     _Settings_AddHelp($chk_AutoPan, "When selected, the music pans by itself, moving slowly between the left and right ears while it plays, with nothing to press. Ctrl+Left and Ctrl+Right do nothing while this option is on. Clear this option to pan by hand again.")
     _Settings_AddHelp($inp_AutoPanPeriod, "The number of seconds the sound takes to travel from the left ear to the right ear and back. A smaller number pans faster. Allowed values are 1 to 60.")
+    _Settings_AddHelp($cbo_Voice, "Makes speech clearer: a compressor evens out loud and quiet voices and an equalizer lifts the speech range. Light is gentle, Strong is more effective for quiet or unclear recordings. The equalizer part is used only when the equalizer above is Off. You can also press Ctrl+Shift+V in the player to switch between Off, Light and Strong.")
+    _Settings_AddHelp($chk_AnnounceChapters, "When a video, podcast episode or audio file has chapters, the screen reader announces the title of each new chapter as it begins. Page Up and Page Down move between chapters and H lists them.")
     _Settings_AddHelp($chk_NormalizeVolume, "Evens out the loudness so that quiet and loud tracks sound alike. It takes effect from the next track you play.")
     _Settings_AddHelp($inp_DownloadPath, "Shows the folder where downloaded files are saved. This box is read-only. Use the Change Path button to choose another folder.")
     _Settings_AddHelp($btn_ChangePath, "Opens a window where you choose another folder for downloads.")
@@ -8696,7 +9075,7 @@ Func _ShowSettings()
     _Settings_AddHelp($sld_RecVol, "Sets how loud the recordings are, from 0 to 100, on the same scale as the radio volume. 100 is the full volume of the station. Use the left and right arrows to change it by 5, Page Up and Page Down by 10.")
     _Settings_AddHelp($inp_RecAutoStop, "The recording stops by itself after this many minutes. Enter 0 to record until you stop it.")
     _Settings_AddHelp($chk_VoiceAutoSearch, "Starts the search automatically when you finish entering it by voice, so you do not need to press the Search button.")
-    _Settings_AddHelp($chk_TypingSound, "Plays a key sound as you type in the search box. Choose the sound in the list below.")
+    _Settings_AddHelp($chk_TypingSound, "Plays a key sound as you type in a search box. When this is selected, a list appears below to choose the sound. When it is cleared the list is hidden.")
     _Settings_AddHelp($cbo_TypingSoundSet, "Chooses the keyboard sound played when you type in the search box. Use the arrow keys to browse the list.")
     _Settings_AddHelp($chk_ResumeLocal, "When selected, an audio file you open from your computer continues from the point where you stopped listening to it last time. Each file remembers its own position.")
     _Settings_AddHelp($cbo_HKScope, "Chooses which shortcuts are listed: those of the main window or those of the player.")
@@ -8720,6 +9099,7 @@ Func _ShowSettings()
 
     While 1
         _SyncEnterAccel($g_hSettingsGui, $aAccelSettings, $lst_HK, $bEnterAccSet)
+        _Settings_SyncTypingSet($chk_TypingSound, $lbl_TypingSoundSet, $cbo_TypingSoundSet)
         Local $nMsg = _GuiMsg($g_hSettingsGui)
         Switch $nMsg
             Case $GUI_EVENT_CLOSE, $btn_Cancel
@@ -8878,6 +9258,7 @@ Func _ShowSettings()
                 $g_bMuteAppSounds = (GUICtrlRead($chk_MuteAppSounds) = $GUI_CHECKED)
                 $g_bShowLogo = (GUICtrlRead($chk_ShowLogo) = $GUI_CHECKED)
                 $g_bShowLicenseConfirm = (GUICtrlRead($chk_ShowLicenseConfirm) = $GUI_CHECKED)
+                $g_bCheckSubsOnStart = (GUICtrlRead($chk_CheckSubs) = $GUI_CHECKED)
                 If $g_bMuteAppSounds Then DllCall("winmm.dll", "int", "PlaySoundW", "ptr", 0, "ptr", 0, "dword", 0) ; dừng âm thanh đang phát
                 $g_bVoiceAutoSearch = (GUICtrlRead($chk_VoiceAutoSearch) = $GUI_CHECKED)
                 $g_bTypingSoundEnabled = (GUICtrlRead($chk_TypingSound) = $GUI_CHECKED)
@@ -8891,6 +9272,9 @@ Func _ShowSettings()
                     If $g_iEqPreset < -1 Or $g_iEqPreset > 17 Then $g_iEqPreset = -1
                 EndIf
                 $g_bNormalizeVolume = (GUICtrlRead($chk_NormalizeVolume) = $GUI_CHECKED)
+                $g_iVoiceMode = _GUICtrlComboBox_GetCurSel($cbo_Voice)
+                If $g_iVoiceMode < 0 Or $g_iVoiceMode > 2 Then $g_iVoiceMode = 0
+                $g_bAnnounceChapters = (GUICtrlRead($chk_AnnounceChapters) = $GUI_CHECKED)
                 _VLC_ApplyEqualizer() ; applies to the track that is playing, if any
                 $g_iStereoMode = _GUICtrlComboBox_GetCurSel($cbo_StereoMode)
                 If $g_iStereoMode < 0 Or $g_iStereoMode > 4 Then $g_iStereoMode = 0
@@ -8962,6 +9346,8 @@ Func _ShowSettings()
                 IniWrite($CONFIG_FILE, "Settings", "EqualizerPreset", String($g_iEqPreset))
                 IniWrite($CONFIG_FILE, "Settings", "NormalizeVolume", $g_bNormalizeVolume ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "StereoMode", String($g_iStereoMode))
+                IniWrite($CONFIG_FILE, "Settings", "VoiceEnhance", String($g_iVoiceMode))
+                IniWrite($CONFIG_FILE, "Settings", "AnnounceChapters", $g_bAnnounceChapters ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "AutoPan", $g_bAutoPan ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "AutoPanPeriod", String($g_iAutoPanPeriod))
                 IniWrite($CONFIG_FILE, "Settings", "ContinueWatching", $g_bContinueWatching ? "true" : "false")
@@ -8981,6 +9367,7 @@ Func _ShowSettings()
                 EndIf
                 IniWrite($CONFIG_FILE, "Settings", "FFStep", String($g_iFFStep))
                 IniWrite($CONFIG_FILE, "Settings", "RWStep", String($g_iRWStep))
+                IniWrite($CONFIG_FILE, "Settings", "CheckSubsOnStart", $g_bCheckSubsOnStart ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "TypingSoundEnabled", $g_bTypingSoundEnabled ? "true" : "false")
                 IniWrite($CONFIG_FILE, "Settings", "TypingSoundSet", $g_sTypingSoundSet)
                 ; --- Radio recording ---
@@ -9354,7 +9741,8 @@ Func _ShowPlaylistVideos($sPlaylistID, $sPlaylistTitle)
     WEnd
 EndFunc
 
-Func _ShowChannelVideos($sChannelID, $sChannelTitle)
+; $iMax > 0: only the latest $iMax videos are listed (used when a subscription is opened)
+Func _ShowChannelVideos($sChannelID, $sChannelTitle, $iMax = 0)
     ; 1. Hiển thị hộp thoại Loading video
     Local $hLoad = GUICreate(_T("Loading"), 300, 80, -1, -1, $WS_POPUP, BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW))
     GUISetBkColor(0xFFFFFF)
@@ -9363,10 +9751,11 @@ Func _ShowChannelVideos($sChannelID, $sChannelTitle)
     _AppPlaySoundW(@ScriptDir & "\sounds\loading.wav", 0x0009)
 
     ; 2. Tải danh sách video bằng yt-dlp từ tab videos của channel
-    Local $sUrl = "https://www.youtube.com/channel/" & $sChannelID & "/videos"
-    If StringLeft($sChannelID, 1) = "@" Then $sUrl = "https://www.youtube.com/" & $sChannelID & "/videos"
+    Local $sUrl = _YTS_ChannelUrl($sChannelID)
+    Local $sLimit = ""
+    If $iMax > 0 Then $sLimit = ' --playlist-end ' & $iMax
 
-    Local $sParams = '--flat-playlist --print "T:%(title)s" --print "D:%(duration_string)s" --print "I:%(id)s" --no-warnings --encoding utf-8 -- "' & $sUrl & '"'
+    Local $sParams = '--flat-playlist' & $sLimit & ' --print "T:%(title)s" --print "D:%(duration_string)s" --print "I:%(id)s" --no-warnings --encoding utf-8 -- "' & $sUrl & '"'
     Local $sFullCmd = $YT_DLP_EXE & ' ' & $sParams
     Local $iPID = Run($sFullCmd, @ScriptDir, @SW_HIDE, $STDOUT_CHILD + $STDERR_CHILD)
 
@@ -9399,9 +9788,11 @@ Func _ShowChannelVideos($sChannelID, $sChannelTitle)
     GUICtrlSetColor(-1, 0xFFFFFF)
     GUICtrlSetFont(-1, 10, 800)
     Local $lst_ch = GUICtrlCreateList("", 10, 35, 380, 355, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
-    Local $btn_back = GUICtrlCreateButton(_T("Close"), 10, 400, 380, 30)
+    Local $bSub = _YTS_IsSubscribed($sChannelID)
+    Local $btn_sub = GUICtrlCreateButton(_T($bSub ? "Un&subscribe (Ctrl+D)" : "&Subscribe (Ctrl+D)"), 10, 400, 185, 30)
+    Local $btn_back = GUICtrlCreateButton(_T("Close"), 205, 400, 185, 30)
 
-    Local $aChIds[1], $aChTitles[1], $aChTypes[1]
+    Local $aChIds[1], $aChTitles[1], $aChTypes[1], $aChDisp[1]
     Local $sCurrentT = "", $sCurrentI = "", $sCurrentD = ""
     Local $iChCount = 0
 
@@ -9426,7 +9817,9 @@ Func _ShowChannelVideos($sChannelID, $sChannelTitle)
             ReDim $aChIds[$iChCount + 1]
             ReDim $aChTitles[$iChCount + 1]
             ReDim $aChTypes[$iChCount + 1]
+            ReDim $aChDisp[$iChCount + 1]
 
+            $aChDisp[$iChCount] = $sDisp
             $aChIds[$iChCount] = $sCurrentI
             $aChTitles[$iChCount] = $sCurrentT
             $aChTypes[$iChCount] = "video"
@@ -9440,13 +9833,39 @@ Func _ShowChannelVideos($sChannelID, $sChannelTitle)
         Return
     EndIf
 
+    ; Subscribed channel: the videos published since the last visit are marked "New", then they count as seen
+    If $bSub Then
+        Local $sSeenCh = _YTS_GetSeen($sChannelID), $iNewCh = 0
+        If $sSeenCh <> "" Then
+            $iNewCh = $iChCount
+            For $i = 1 To $iChCount
+                If $aChIds[$i] = $sSeenCh Then
+                    $iNewCh = $i - 1
+                    ExitLoop
+                EndIf
+            Next
+        EndIf
+        If $iNewCh > 0 Then
+            _GUICtrlListBox_ResetContent($lst_ch)
+            For $i = 1 To $iChCount
+                If $i <= $iNewCh Then
+                    _GUICtrlListBox_AddString($lst_ch, StringReplace($aChDisp[$i], $i & ". ", $i & ". " & _T("New") & ": ", 1))
+                Else
+                    _GUICtrlListBox_AddString($lst_ch, $aChDisp[$i])
+                EndIf
+            Next
+        EndIf
+        _YTS_SetSeen($sChannelID, $aChIds[1])
+        _Sub_SetNew("yt", $sChannelID, 0)
+    EndIf
+
     _GUICtrlListBox_SetCurSel($lst_ch, 0)
     GUISetState(@SW_SHOW, $hChGui)
     ControlFocus($hChGui, "", $lst_ch)
 
     Local $hDummyEnterCh = GUICtrlCreateDummy()
     Local $hDummyAudioCh = GUICtrlCreateDummy()
-    Local $aAccelCh[2][2] = [["{ENTER}", $hDummyEnterCh], ["^{ENTER}", $hDummyAudioCh]]
+    Local $aAccelCh[3][2] = [["{ENTER}", $hDummyEnterCh], ["^{ENTER}", $hDummyAudioCh], ["^d", $btn_sub]]
     GUISetAccelerators($aAccelCh, $hChGui)
     Local $bEnterAccCh = True
 
@@ -9454,7 +9873,7 @@ Func _ShowChannelVideos($sChannelID, $sChannelTitle)
         _SyncEnterAccel($hChGui, $aAccelCh, $lst_ch, $bEnterAccCh)
         Local $nMsg = GUIGetMsg()
         If $nMsg = $hDummyEnterCh Then
-            Local $aBtnCh[1] = [$btn_back]
+            Local $aBtnCh[2] = [$btn_back, $btn_sub]
             Local $iBtnCh = _EnterFocusedButton($hChGui, $aBtnCh)
             If $iBtnCh <> 0 Then $nMsg = $iBtnCh
         EndIf
@@ -9462,6 +9881,22 @@ Func _ShowChannelVideos($sChannelID, $sChannelTitle)
             Case $GUI_EVENT_CLOSE, $btn_back
                 GUIDelete($hChGui)
                 Return
+            Case $btn_sub
+                If $bSub Then
+                    If _YTS_Unsubscribe($sChannelID) Then
+                        $bSub = False
+                        GUICtrlSetData($btn_sub, _T("&Subscribe (Ctrl+D)"))
+                        _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
+                        _ReportStatus(_TF("Unsubscribed from {1}", $sChannelTitle))
+                    EndIf
+                ElseIf _YTS_Subscribe($sChannelID, $sChannelTitle, $aChIds[1]) >= 0 Then
+                    $bSub = True
+                    GUICtrlSetData($btn_sub, _T("Un&subscribe (Ctrl+D)"))
+                    _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
+                    _ReportStatus(_TF("Subscribed to {1}", $sChannelTitle))
+                Else
+                    _ReportStatus(_T("Could not save the subscription"))
+                EndIf
             Case $hDummyEnterCh, $hDummyAudioCh
                 Local $iIndex = _GUICtrlListBox_GetCurSel($lst_ch)
                 If $iIndex <> -1 Then
@@ -9788,7 +10223,7 @@ Func _ShowCollectionItemContextMenu($sColFile, $hParent, $hList, ByRef $aIds, By
         Case 1005
             _Action_OpenBrowser($iSel)
         Case 1006
-            _Action_CopyLink($iSel)
+            _Action_CopyLink($iSel, $hParent)
         Case 1009
             _ShowSongLyrics($sTitle, $hParent, $sID)
         Case 1013
@@ -9804,9 +10239,9 @@ Func _ShowCollectionItemContextMenu($sColFile, $hParent, $hList, ByRef $aIds, By
                 _AddFavorite($sID, $sTitle)
             EndIf
         Case 1011 ; Telegram
-            ShellExecute("https://t.me/share/url?url=" & _URLEncode("https://www.youtube.com/watch?v=" & $sID) & "&text=" & _URLEncode($sTitle))
+            _ShowShareLinkDialog("telegram", $sID, $sTitle, $hParent)
         Case 1012 ; Facebook
-            ShellExecute("https://www.facebook.com/sharer/sharer.php?u=" & _URLEncode("https://www.youtube.com/watch?v=" & $sID))
+            _ShowShareLinkDialog("facebook", $sID, $sTitle, $hParent)
         Case 2001 ; Remove from THIS collection
             _RemoveFromCollection($sColFile, $sID)
             _LoadCollectionItems($sColFile, $hList, $aIds, $aTitles)
@@ -9879,7 +10314,7 @@ Func _DownloadCollection($sColName)
         If @error = -1 Then ExitLoop
         Local $aParts = StringSplit($sLine, "|")
         If $aParts[0] >= 1 Then
-            _ArrayAdd($aLinks, "https://www.youtube.com/watch?v=" & $aParts[1])
+            _ArrayAdd($aLinks, _VideoLink($aParts[1]))
         EndIf
     WEnd
     FileClose($hFile)
@@ -12071,6 +12506,10 @@ Func _HK_Init()
     _HK_Reg("lyrics", "player", "^!l", "View lyrics")
     _HK_Reg("copy_title", "player", "c", "Copy the track title")
     _HK_Reg("eq_dialog", "player", "^e", "Open the equalizer")
+    _HK_Reg("chapter_next", "player", "{PGDN}", "Next chapter")
+    _HK_Reg("chapter_prev", "player", "{PGUP}", "Previous chapter")
+    _HK_Reg("chapters", "player", "h", "List of chapters")
+    _HK_Reg("voice", "player", "^+v", "Voice enhancement: Off / Light / Strong")
     _HK_Reg("file_info", "player", "i", "Show file information")
     _HK_Reg("next", "player", "n", "Next file / Auto-play on or off")
     _HK_Reg("prev", "player", "b", "Previous file")
@@ -12099,15 +12538,17 @@ Func _HK_Init()
     _HK_Reg("close_player", "player", "{ESC}", "Close the player")
     _HK_Reg("exit_app", "player", "^w", "Exit the application")
     _HK_Reg("main_download", "main", "!d", "", "Download from link (Alt+D)")
-    _HK_Reg("main_play", "main", "!p", "", "Play YouTube link (Alt+P)")
+    _HK_Reg("main_play", "main", "!p", "", "Play Video or Music Link (Alt+P)")
     _HK_Reg("main_direct", "main", "!l", "", "Play direct link (Alt+L)")
-    _HK_Reg("main_search", "main", "!s", "", "Search on YouTube (Alt+S)")
+    _HK_Reg("main_search", "main", "!s", "", "Search Videos and Music (Alt+S)")
     _HK_Reg("main_collections", "main", "!c", "", "Your Collections (Alt+C)")
     _HK_Reg("main_audio", "main", "!u", "", "Listen to Audio File (Alt+U)")
     _HK_Reg("main_recent_files", "main", "!e", "", "Recent Files (Alt+E)")
     _HK_Reg("main_recent_folders", "main", "!o", "", "Recent Folders (Alt+O)")
     _HK_Reg("main_radio", "main", "!r", "", "Radio Player (Alt+R)")
     _HK_Reg("main_radio_fav", "main", "!v", "", "Favorite Stations (Alt+V)")
+    _HK_Reg("main_podcasts", "main", "!k", "", "Podcasts (Alt+K)")
+    _HK_Reg("main_yt_subs", "main", "!y", "", "YouTube Subscriptions (Alt+Y)")
     _HK_Reg("main_queue", "main", "!q", "", "Play Queue (Alt+Q)")
     _HK_Reg("main_dq", "main", "!z", "", "Download Queue (Alt+Z)")
     _HK_Reg("main_fav", "main", "!f", "", "Favorites (Alt+F)")
@@ -12143,6 +12584,10 @@ Func _HK_SetPlayerHandles()
     _HK_SetHandle("lyrics", $hDummyCtrlAltL)
     _HK_SetHandle("copy_title", $hDummyC)
     _HK_SetHandle("eq_dialog", $hDummyEq)
+    _HK_SetHandle("chapter_next", $hDummyChapNext)
+    _HK_SetHandle("chapter_prev", $hDummyChapPrev)
+    _HK_SetHandle("chapters", $hDummyChapList)
+    _HK_SetHandle("voice", $hDummyVoice)
     _HK_SetHandle("file_info", $hDummyI)
     _HK_SetHandle("next", $hDummyN)
     _HK_SetHandle("prev", $hDummyB)
@@ -12204,4 +12649,1896 @@ Func _IsUrlMatchTab($sUrl, $iTab)
             Return StringInStr($sUrl, "soundcloud.com")
     EndSwitch
     Return False
+EndFunc
+
+
+; ======================================================================
+;  VERSION 3.3 - HELPERS FOR LINKS (YouTube id or full link of another site)
+; ======================================================================
+Func _IsWebLink($s)
+    Return StringRegExp($s, "^(?i)https?://")
+EndFunc
+
+; SoundCloud links (soundcloud.com, m.soundcloud.com, on.soundcloud.com, snd.sc)
+Func _IsSoundCloudLink($s)
+    Return StringRegExp($s, "(?i)^https?://([a-z0-9-]+\.)?(soundcloud\.com|snd\.sc)(/|$|\?)")
+EndFunc
+
+; "https://soundcloud.com/artist/some-track" -> "https://soundcloud.com/artist" (page of the artist)
+Func _SC_ArtistUrl($sUrl)
+    Local $a = StringRegExp($sUrl, "(?i)^(https?://(?:[a-z0-9-]+\.)?soundcloud\.com/[^/?#]+)", 3)
+    If IsArray($a) Then Return $a[0]
+    Return $sUrl
+EndFunc
+
+; Seconds -> "m:ss" or "h:mm:ss" (the form SoundCloud understands in #t=)
+Func _SC_TimeFragment($iSec)
+    $iSec = Int($iSec)
+    If $iSec < 0 Then $iSec = 0
+    Local $h = Int($iSec / 3600), $m = Int(Mod($iSec, 3600) / 60), $s = Mod($iSec, 60)
+    If $h > 0 Then Return $h & ":" & StringFormat("%02d", $m) & ":" & StringFormat("%02d", $s)
+    Return $m & ":" & StringFormat("%02d", $s)
+EndFunc
+
+; Items from other sites (SoundCloud...) keep their full link as the "id"
+Func _VideoLink($sID)
+    If _IsWebLink($sID) Then Return $sID
+    Return "https://www.youtube.com/watch?v=" & $sID
+EndFunc
+
+Func _VideoShortLink($sID)
+    If _IsWebLink($sID) Then Return $sID
+    Return "https://youtu.be/" & $sID
+EndFunc
+
+; ======================================================================
+;  CHAPTERS (version 3.3)
+;  YouTube and other sites: yt-dlp ("%(chapters)j"). Local files: ffmpeg (-i prints the chapters).
+;  Podcasts: chapters file of the feed (Podcasting 2.0) or time stamps in the show notes.
+;  Page Up / Page Down = previous / next chapter, H = list of chapters.
+; ======================================================================
+Func _Chap_Reset()
+    If $g_iChapPid <> 0 Then
+        If ProcessExists($g_iChapPid) Then ProcessClose($g_iChapPid)
+    EndIf
+    $g_iChapPid = 0
+    $g_iChapMode = 0
+    $g_sChapOut = ""
+    $g_iChapCount = 0
+    $g_iChapCur = -1
+    ReDim $g_aChapT[1]
+    ReDim $g_aChapN[1]
+EndFunc
+
+Func _Chap_Set(ByRef $aT, ByRef $aN, $iCount)
+    If $iCount < 1 Then Return
+    ReDim $g_aChapT[$iCount]
+    ReDim $g_aChapN[$iCount]
+    For $i = 0 To $iCount - 1
+        $g_aChapT[$i] = $aT[$i]
+        $g_aChapN[$i] = $aN[$i]
+    Next
+    $g_iChapCount = $iCount
+    $g_iChapCur = -1
+EndFunc
+
+Func _Chap_StartOnline($sID)
+    _Chap_Reset()
+    If $sID = "" Then Return
+    Local $sCmd = @ComSpec & ' /c "' & $YT_DLP_EXE & ' --skip-download --no-playlist --no-warnings --socket-timeout 10 --print "%(chapters)j" -- "' & $sID & '""'
+    $g_iChapPid = Run($sCmd, @ScriptDir, @SW_HIDE, $STDOUT_CHILD)
+    If $g_iChapPid = 0 Then Return
+    $g_iChapMode = 1
+    $g_hChapTimer = TimerInit()
+EndFunc
+
+Func _Chap_StartFile($sPath)
+    _Chap_Reset()
+    If $sPath = "" Or Not FileExists($sPath) Then Return
+    If Not FileExists($FFMPEG_PATH) Then Return
+    $g_iChapPid = Run('"' & $FFMPEG_PATH & '" -hide_banner -i "' & $sPath & '"', @ScriptDir, @SW_HIDE, $STDERR_CHILD)
+    If $g_iChapPid = 0 Then Return
+    $g_iChapMode = 2
+    $g_hChapTimer = TimerInit()
+EndFunc
+
+; Reads the output of the background process; when it has finished the chapters are parsed
+Func _Chap_Poll()
+    If $g_iChapPid = 0 Then Return
+    If $g_iChapMode = 2 Then
+        $g_sChapOut &= BinaryToString(StderrRead($g_iChapPid, False, True), 4)
+    Else
+        $g_sChapOut &= BinaryToString(StdoutRead($g_iChapPid, False, True), 4)
+    EndIf
+    If ProcessExists($g_iChapPid) Then
+        If TimerDiff($g_hChapTimer) > 45000 Then
+            ProcessClose($g_iChapPid)
+            $g_iChapPid = 0
+            $g_iChapMode = 0
+            $g_sChapOut = ""
+        EndIf
+        Return
+    EndIf
+    If $g_iChapMode = 2 Then
+        $g_sChapOut &= BinaryToString(StderrRead($g_iChapPid, False, True), 4)
+    Else
+        $g_sChapOut &= BinaryToString(StdoutRead($g_iChapPid, False, True), 4)
+    EndIf
+    _Chap_Parse()
+    $g_iChapPid = 0
+    $g_iChapMode = 0
+    $g_sChapOut = ""
+    If $g_iChapCount > 0 Then _ReportStatus(_TF("{1} chapters available. Press {2} to list them.", $g_iChapCount, _HK_Display(_HK_Key("chapters"))))
+EndFunc
+
+Func _Chap_Parse()
+    Local $aT[1], $aN[1], $n = 0, $aObj, $aM, $a, $i
+    If $g_iChapMode = 1 Then
+        $aObj = StringRegExp($g_sChapOut, '\{[^{}]*\}', 3)
+        If @error Or Not IsArray($aObj) Then Return
+        ReDim $aT[UBound($aObj)]
+        ReDim $aN[UBound($aObj)]
+        For $i = 0 To UBound($aObj) - 1
+            $a = StringRegExp($aObj[$i], '"start_time"\s*:\s*(-?[0-9.]+)', 1)
+            If @error Or Not IsArray($a) Then ContinueLoop
+            $aT[$n] = Number($a[0])
+            $aN[$n] = StringStripWS(_Json_Str($aObj[$i], "title"), 7)
+            If $aN[$n] = "" Then $aN[$n] = _TF("Chapter {1}", $n + 1)
+            $n += 1
+        Next
+    ElseIf $g_iChapMode = 2 Then
+        $aM = StringRegExp($g_sChapOut, 'Chapter #\d+:\d+: start ([0-9.]+), end [0-9.]+\r?\n\s*Metadata:\r?\n\s*title\s*:\s*([^\r\n]*)', 3)
+        If @error Or Not IsArray($aM) Then Return
+        ReDim $aT[Int(UBound($aM) / 2)]
+        ReDim $aN[Int(UBound($aM) / 2)]
+        For $i = 0 To UBound($aM) - 2 Step 2
+            $aT[$n] = Number($aM[$i])
+            $aN[$n] = StringStripWS($aM[$i + 1], 7)
+            If $aN[$n] = "" Then $aN[$n] = _TF("Chapter {1}", $n + 1)
+            $n += 1
+        Next
+    EndIf
+    If $n < 1 Then Return
+    ReDim $aT[$n]
+    ReDim $aN[$n]
+    _Chap_Set($aT, $aN, $n)
+EndFunc
+
+; Chapters from lines such as "12:30 Title" in a description / show notes. Returns the number of chapters (0 = none)
+Func _Chap_FromText($sText, ByRef $aT, ByRef $aN)
+    Local $aL = StringSplit(StringReplace($sText, @CR, ""), @LF, 2)
+    Local $nOut = 0, $m, $p, $fT, $fLast = -1, $i, $k
+    ReDim $aT[UBound($aL) + 1]
+    ReDim $aN[UBound($aL) + 1]
+    For $i = 0 To UBound($aL) - 1
+        $m = StringRegExp(StringStripWS($aL[$i], 3), '^[\(\[]?((?:\d{1,2}:)?\d{1,2}:\d{2})[\)\]]?\s*[-:.]*\s*(.+)$', 1)
+        If @error Or Not IsArray($m) Then ContinueLoop
+        $p = StringSplit($m[0], ":", 2)
+        $fT = 0
+        For $k = 0 To UBound($p) - 1
+            $fT = $fT * 60 + Int($p[$k])
+        Next
+        If $fT <= $fLast Then ContinueLoop
+        $fLast = $fT
+        $aT[$nOut] = $fT
+        $aN[$nOut] = StringStripWS($m[1], 7)
+        $nOut += 1
+    Next
+    If $nOut < 3 Then Return 0
+    Return $nOut
+EndFunc
+
+Func _Chap_IndexAt($fSec)
+    Local $iIdx = -1
+    For $i = 0 To $g_iChapCount - 1
+        If $g_aChapT[$i] <= $fSec + 0.3 Then
+            $iIdx = $i
+        Else
+            ExitLoop
+        EndIf
+    Next
+    Return $iIdx
+EndFunc
+
+Func _Chap_Label($i)
+    Return _TF("Chapter {1} of {2}: {3}", $i + 1, $g_iChapCount, $g_aChapN[$i])
+EndFunc
+
+Func _Chap_Jump($iIdx)
+    If $iIdx < 0 Or $iIdx >= $g_iChapCount Then Return
+    _VLC_Direct_SetTime(Int($g_aChapT[$iIdx] * 1000))
+    $g_iChapCur = $iIdx
+    _ReportStatus(_Chap_Label($iIdx))
+EndFunc
+
+Func _Chap_NoneText()
+    If $g_iChapPid <> 0 Then Return _T("Chapters are still loading...")
+    Return _T("No chapters in this video.")
+EndFunc
+
+; $iDir = 1: next chapter. $iDir = -1: start of this chapter (after 3 seconds into it) or the previous chapter
+Func _Chap_Step($iDir)
+    If $g_iChapCount < 1 Then
+        _ReportStatus(_Chap_NoneText())
+        Return
+    EndIf
+    Local $fNow = _VLC_Direct_GetTime() / 1000
+    Local $iCur = _Chap_IndexAt($fNow)
+    Local $iTarget
+    If $iDir > 0 Then
+        $iTarget = $iCur + 1
+        If $iTarget >= $g_iChapCount Then
+            _ReportStatus(_T("This is the last chapter."))
+            Return
+        EndIf
+    Else
+        If $iCur >= 0 And $fNow - $g_aChapT[$iCur] > 3 Then
+            $iTarget = $iCur
+        Else
+            $iTarget = $iCur - 1
+        EndIf
+        If $iTarget < 0 Then $iTarget = 0
+    EndIf
+    _Chap_Jump($iTarget)
+EndFunc
+
+; Called twice a second by the player: loads the chapters and announces a new chapter when it starts
+Func _Chap_Tick()
+    _Chap_Poll()
+    If $g_iChapCount < 1 Or Not $g_bAnnounceChapters Then Return
+    If _VLC_Direct_GetState() <> 3 Then Return
+    Local $iIdx = _Chap_IndexAt(_VLC_Direct_GetTime() / 1000)
+    If $iIdx = $g_iChapCur Then Return
+    Local $bFirst = ($g_iChapCur = -1)
+    $g_iChapCur = $iIdx
+    If $iIdx >= 0 And Not $bFirst Then _ReportStatus(_Chap_Label($iIdx))
+EndFunc
+
+Func _ShowChaptersDialog($hParent = 0)
+    If $g_iChapCount < 1 Then
+        _ReportStatus(_Chap_NoneText())
+        Return
+    EndIf
+    Local $hGui = GUICreate(_T("Chapters"), 420, 350, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU), $WS_EX_TOPMOST, IsHWnd($hParent) ? $hParent : 0)
+    GUISetBkColor($COLOR_BLUE)
+    GUICtrlCreateLabel(_T("Chapters (press Enter to jump to the chapter):"), 10, 10, 400, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $lst = GUICtrlCreateList("", 10, 35, 400, 250, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
+    Local $btnGo = GUICtrlCreateButton(_T("&Jump"), 80, 300, 110, 32, $BS_DEFPUSHBUTTON)
+    Local $btnClose = GUICtrlCreateButton(_T("&Close"), 230, 300, 110, 32)
+    Local $s = "", $i
+    For $i = 0 To $g_iChapCount - 1
+        $s &= ($i + 1) & ". " & _FormatTime($g_aChapT[$i]) & "  " & StringReplace($g_aChapN[$i], "|", "/") & "|"
+    Next
+    GUICtrlSetData($lst, StringTrimRight($s, 1))
+    Local $iCur = _Chap_IndexAt(_VLC_Direct_GetTime() / 1000)
+    If $iCur < 0 Then $iCur = 0
+    _GUICtrlListBox_SetCurSel($lst, $iCur)
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $aAcc[1][2] = [["{ESC}", $hDummyEsc]]
+    GUISetAccelerators($aAcc, $hGui)
+    GUISetState(@SW_SHOW, $hGui)
+    _AllowUIPI($hGui)
+    ControlFocus($hGui, "", $lst)
+    Local $nMsg, $iSel = -1
+    While 1
+        $nMsg = _GuiMsg($hGui)
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnClose, $hDummyEsc
+                ExitLoop
+            Case $btnGo
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                ExitLoop
+        EndSwitch
+        Sleep(10)
+    WEnd
+    GUIDelete($hGui)
+    If IsHWnd($hParent) Then
+        GUISwitch($hParent)
+        WinActivate($hParent)
+    EndIf
+    If $iSel >= 0 Then _Chap_Jump($iSel)
+EndFunc
+
+; ======================================================================
+;  VOICE ENHANCEMENT (version 3.3)
+;  Light / Strong: VLC "compressor" filter (evens out loud and quiet speech) + an equalizer curve that
+;  lifts the speech range (used when the equalizer in Settings is Off). Settings > Player, or Ctrl+Shift+V in the player.
+; ======================================================================
+Func _Voice_Name($iMode)
+    Switch $iMode
+        Case 1
+            Return _T("Light")
+        Case 2
+            Return _T("Strong")
+    EndSwitch
+    Return _T("Off")
+EndFunc
+
+Func _Voice_AddMediaOptions($pMedia)
+    If $g_iVoiceMode < 1 Then Return
+    Local $sThr = "-16", $sRatio = "4", $sGain = "6"
+    If $g_iVoiceMode = 2 Then
+        $sThr = "-22"
+        $sRatio = "8"
+        $sGain = "9"
+    EndIf
+    DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_add_option", "ptr", $pMedia, "str", ":compressor-threshold=" & $sThr)
+    DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_add_option", "ptr", $pMedia, "str", ":compressor-ratio=" & $sRatio)
+    DllCall($hVLC_Dll, "none:cdecl", "libvlc_media_add_option", "ptr", $pMedia, "str", ":compressor-makeup-gain=" & $sGain)
+EndFunc
+
+Func _Voice_FillEq($pEq)
+    Local $aBands[10] = [-6, -3, 0, 1, 3, 4, 2, -1, -3, -4]
+    If $g_iVoiceMode = 2 Then
+        Local $aStrong[10] = [-9, -5, -1, 1, 4, 6, 3, -1, -4, -6]
+        $aBands = $aStrong
+    EndIf
+    DllCall($hVLC_Dll, "int:cdecl", "libvlc_audio_equalizer_set_preamp", "ptr", $pEq, "float", -2)
+    For $i = 0 To 9
+        DllCall($hVLC_Dll, "int:cdecl", "libvlc_audio_equalizer_set_amp_at_index", "ptr", $pEq, "float", $aBands[$i], "uint", $i)
+    Next
+EndFunc
+
+Func _Voice_Cycle()
+    $g_iVoiceMode += 1
+    If $g_iVoiceMode > 2 Then $g_iVoiceMode = 0
+    IniWrite($CONFIG_FILE, "Settings", "VoiceEnhance", String($g_iVoiceMode))
+    _VLC_ApplyEqualizer()
+EndFunc
+
+; The compressor is a media option: reopen the stream at the same position so the change is heard at once
+Func _Voice_Restart($sPlayUrl, $bFile)
+    Local $iPos = _VLC_Direct_GetTime()
+    If $bFile Then
+        _VLC_Direct_Play(_PathToFileURI($sPlayUrl))
+    Else
+        _VLC_Direct_Play($sPlayUrl)
+    EndIf
+    Sleep(200)
+    _VLC_Direct_SetVolume($g_iAppVolume)
+    _VLC_Direct_SetRate($g_fPitch)
+    Local $i = 0
+    While $i < 50
+        If _VLC_Direct_GetState() >= 3 Then ExitLoop
+        Sleep(100)
+        $i += 1
+    WEnd
+    If $iPos > 0 Then _VLC_Direct_SetTime($iPos)
+    _VLC_ApplyEqualizer()
+    _VLC_ApplyStereoMode()
+EndFunc
+
+
+; ======================================================================
+;  PODCASTS (version 3.3)
+;  Main window > Podcasts (Alt+K): search (Apple podcast directory), paste an RSS link, My subscriptions, New episodes.
+;  Episodes play in the normal player (speed, seek, Sleep Timer, chapters...) and each episode remembers its position.
+; ======================================================================
+Func _Pod_Clean($s)
+    $s = StringReplace($s, "|", "/")
+    $s = StringReplace($s, @CRLF, " ")
+    $s = StringReplace($s, @LF, " ")
+    $s = StringReplace($s, @CR, " ")
+    Return StringStripWS($s, 7)
+EndFunc
+
+Func _Xml_Text($s)
+    $s = StringRegExpReplace($s, '(?s)<!\[CDATA\[(.*?)\]\]>', '\1')
+    $s = StringReplace($s, "&lt;", "<")
+    $s = StringReplace($s, "&gt;", ">")
+    $s = StringRegExpReplace($s, '(?i)<br\s*/?>|</p>|</li>|</div>', @LF)
+    $s = StringRegExpReplace($s, '(?s)<[^>]*>', '')
+    $s = StringReplace($s, "&quot;", '"')
+    $s = StringReplace($s, "&apos;", "'")
+    $s = StringReplace($s, "&nbsp;", " ")
+    Local $a = StringRegExp($s, '&#(\d+);', 3), $i
+    If IsArray($a) Then
+        For $i = 0 To UBound($a) - 1
+            $s = StringReplace($s, "&#" & $a[$i] & ";", ChrW(Int($a[$i])))
+        Next
+    EndIf
+    $a = StringRegExp($s, '&#[xX]([0-9A-Fa-f]+);', 3)
+    If IsArray($a) Then
+        For $i = 0 To UBound($a) - 1
+            $s = StringRegExpReplace($s, '&#[xX]' & $a[$i] & ';', ChrW(Dec($a[$i])))
+        Next
+    EndIf
+    $s = StringReplace($s, "&amp;", "&")
+    Return $s
+EndFunc
+
+Func _Pod_Http($sUrl, $iRecvTimeout = 30000)
+    Local $oOldErr = ObjEvent("AutoIt.Error", "_Radio_ComErr")
+    Local $oHTTP = ObjCreate("WinHttp.WinHttpRequest.5.1")
+    If Not IsObj($oHTTP) Then Return ""
+    $oHTTP.SetTimeouts(5000, 5000, 10000, $iRecvTimeout)
+    $oHTTP.Open("GET", $sUrl, False)
+    $oHTTP.SetRequestHeader("User-Agent", "Mozilla/5.0 VDHMediaCenter/" & $version)
+    $oHTTP.Send()
+    If @error Then Return ""
+    If $oHTTP.Status <> 200 Then Return ""
+    Return BinaryToString($oHTTP.ResponseBody, 4)
+EndFunc
+
+Func _Pod_ParseDur($s)
+    $s = StringStripWS($s, 3)
+    If $s = "" Then Return 0
+    If StringRegExp($s, '^\d+$') Then Return Int($s)
+    Local $p = StringSplit($s, ":", 2), $t = 0, $i
+    For $i = 0 To UBound($p) - 1
+        $t = $t * 60 + Int($p[$i])
+    Next
+    Return $t
+EndFunc
+
+; Returns [n][9]: 0 title, 1 audio link, 2 date, 3 duration (s), 4 key, 5 chapters file link, 6 show notes, 7 podcast name, 8 feed link. 0 = not a podcast feed
+Func _Pod_ParseFeed($sXml, ByRef $sTitle, ByRef $sAuthor)
+    $sTitle = ""
+    $sAuthor = ""
+    If StringLen($sXml) < 20 Then Return 0
+    Local $iFirst = StringInStr($sXml, "<item")
+    Local $sHead = $sXml
+    If $iFirst > 0 Then $sHead = StringLeft($sXml, $iFirst - 1)
+    Local $a = StringRegExp($sHead, '(?is)<title[^>]*>(.*?)</title>', 1)
+    If IsArray($a) Then $sTitle = _Pod_Clean(_Xml_Text($a[0]))
+    $a = StringRegExp($sHead, '(?is)<itunes:author[^>]*>(.*?)</itunes:author>', 1)
+    If IsArray($a) Then $sAuthor = _Pod_Clean(_Xml_Text($a[0]))
+    Local $aItems = StringRegExp($sXml, '(?is)<item[\s>].*?</item>', 3)
+    If @error Or Not IsArray($aItems) Then Return 0
+    Local $nMax = UBound($aItems)
+    If $nMax > 300 Then $nMax = 300
+    Local $aEp[$nMax][9], $n = 0, $i, $k, $sItem, $sKey, $sNotes
+    Local $aNames[3] = ["content:encoded", "description", "itunes:summary"]
+    For $i = 0 To $nMax - 1
+        $sItem = $aItems[$i]
+        $a = StringRegExp($sItem, '(?is)<enclosure[^>]*?\burl\s*=\s*["'']([^"'']+)["'']', 1)
+        If Not IsArray($a) Then ContinueLoop
+        $aEp[$n][1] = StringStripWS(_Xml_Text($a[0]), 3)
+        $a = StringRegExp($sItem, '(?is)<title[^>]*>(.*?)</title>', 1)
+        If IsArray($a) Then $aEp[$n][0] = _Pod_Clean(_Xml_Text($a[0]))
+        If $aEp[$n][0] = "" Then $aEp[$n][0] = _TF("Episode {1}", $n + 1)
+        $a = StringRegExp($sItem, '(?is)<pubDate[^>]*>(.*?)</pubDate>', 1)
+        If IsArray($a) Then
+            $a = StringRegExp($a[0], '(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})', 1)
+            If IsArray($a) Then $aEp[$n][2] = $a[0]
+        EndIf
+        $a = StringRegExp($sItem, '(?is)<itunes:duration[^>]*>(.*?)</itunes:duration>', 1)
+        If IsArray($a) Then $aEp[$n][3] = _Pod_ParseDur($a[0])
+        $sKey = ""
+        $a = StringRegExp($sItem, '(?is)<guid[^>]*>(.*?)</guid>', 1)
+        If IsArray($a) Then $sKey = _Pod_Clean(_Xml_Text($a[0]))
+        If $sKey = "" Then $sKey = _Pod_Clean($aEp[$n][1])
+        $aEp[$n][4] = $sKey
+        $a = StringRegExp($sItem, '(?is)<podcast:chapters[^>]*?\burl\s*=\s*["'']([^"'']+)["'']', 1)
+        If IsArray($a) Then $aEp[$n][5] = StringStripWS(_Xml_Text($a[0]), 3)
+        $sNotes = ""
+        For $k = 0 To 2
+            $a = StringRegExp($sItem, '(?is)<' & $aNames[$k] & '[^>]*>(.*?)</' & $aNames[$k] & '>', 1)
+            If IsArray($a) Then
+                If StringLen($a[0]) > StringLen($sNotes) Then $sNotes = $a[0]
+            EndIf
+        Next
+        $aEp[$n][6] = StringLeft(StringStripWS(_Xml_Text($sNotes), 4), 6000)
+        $n += 1
+    Next
+    If $n = 0 Then Return 0
+    ReDim $aEp[$n][9]
+    Return $aEp
+EndFunc
+
+; ---- subscriptions: podcasts.dat, one line per podcast: feed|name|author|key of the newest episode already seen ----
+Func _Pod_SubLoad()
+    Local $a = _RF_Read($PODCASTS_FILE)
+    Local $n = UBound($a)
+    If $n = 0 Then Return 0
+    Local $aOut[$n][4], $p, $k = 0, $i
+    For $i = 0 To $n - 1
+        $p = StringSplit($a[$i], "|", 2)
+        If UBound($p) < 2 Then ContinueLoop
+        $aOut[$k][0] = $p[0]
+        $aOut[$k][1] = $p[1]
+        $aOut[$k][2] = ""
+        $aOut[$k][3] = ""
+        If UBound($p) >= 3 Then $aOut[$k][2] = $p[2]
+        If UBound($p) >= 4 Then $aOut[$k][3] = $p[3]
+        $k += 1
+    Next
+    If $k = 0 Then Return 0
+    ReDim $aOut[$k][4]
+    Return $aOut
+EndFunc
+
+Func _Pod_SubSave(ByRef $aSub, $n)
+    Local $aLines[$n + 1], $k = 0, $i
+    For $i = 0 To $n - 1
+        $aLines[$k] = $aSub[$i][0] & "|" & $aSub[$i][1] & "|" & $aSub[$i][2] & "|" & $aSub[$i][3]
+        $k += 1
+    Next
+    ReDim $aLines[$k]
+    Return _RF_Write($PODCASTS_FILE, $aLines)
+EndFunc
+
+Func _Pod_IsSubscribed($sFeed)
+    Local $aSub = _Pod_SubLoad()
+    If Not IsArray($aSub) Then Return False
+    For $i = 0 To UBound($aSub) - 1
+        If StringLower($aSub[$i][0]) = StringLower($sFeed) Then Return True
+    Next
+    Return False
+EndFunc
+
+; 1 = subscribed, 0 = already subscribed, -1 = could not save
+Func _Pod_Subscribe($sFeed, $sTitle, $sAuthor, $sSeen)
+    Local $aSub = _Pod_SubLoad()
+    Local $n = 0, $i, $j
+    If IsArray($aSub) Then $n = UBound($aSub)
+    For $i = 0 To $n - 1
+        If StringLower($aSub[$i][0]) = StringLower($sFeed) Then Return 0
+    Next
+    Local $aNew[$n + 1][4]
+    For $i = 0 To $n - 1
+        For $j = 0 To 3
+            $aNew[$i][$j] = $aSub[$i][$j]
+        Next
+    Next
+    $aNew[$n][0] = $sFeed
+    $aNew[$n][1] = _Pod_Clean($sTitle)
+    $aNew[$n][2] = _Pod_Clean($sAuthor)
+    $aNew[$n][3] = _Pod_Clean($sSeen)
+    If _Pod_SubSave($aNew, $n + 1) Then Return 1
+    Return -1
+EndFunc
+
+Func _Pod_Unsubscribe($sFeed)
+    Local $aSub = _Pod_SubLoad()
+    If Not IsArray($aSub) Then Return False
+    Local $n = UBound($aSub), $k = 0, $i, $j
+    Local $aNew[$n][4]
+    For $i = 0 To $n - 1
+        If StringLower($aSub[$i][0]) = StringLower($sFeed) Then ContinueLoop
+        For $j = 0 To 3
+            $aNew[$k][$j] = $aSub[$i][$j]
+        Next
+        $k += 1
+    Next
+    Return _Pod_SubSave($aNew, $k)
+EndFunc
+
+Func _Pod_SetSeen($sFeed, $sKey)
+    Local $aSub = _Pod_SubLoad()
+    If Not IsArray($aSub) Then Return
+    Local $n = UBound($aSub), $bChanged = False, $sK = _Pod_Clean($sKey)
+    For $i = 0 To $n - 1
+        If StringLower($aSub[$i][0]) = StringLower($sFeed) And $aSub[$i][3] <> $sK Then
+            $aSub[$i][3] = $sK
+            $bChanged = True
+        EndIf
+    Next
+    If $bChanged Then _Pod_SubSave($aSub, $n)
+EndFunc
+
+; Number of episodes newer than the newest one seen before (feeds list the newest episode first)
+Func _Pod_NewCount(ByRef $aEp, $iCount, $sSeenKey)
+    If $sSeenKey = "" Then Return 0
+    Local $sK = StringLower($sSeenKey)
+    For $i = 0 To $iCount - 1
+        If StringLower($aEp[$i][4]) = $sK Then Return $i
+    Next
+    Return 0
+EndFunc
+
+; ---- played episodes: podcast_played.dat (one key per line) ----
+Func _Pod_PlayedSet()
+    Local $a = _RF_Read($PODCAST_PLAYED_FILE)
+    Local $s = @LF
+    For $i = 0 To UBound($a) - 1
+        $s &= StringLower($a[$i]) & @LF
+    Next
+    Return $s
+EndFunc
+
+Func _Pod_MarkPlayed($sKey, $bPlayed)
+    Local $a = _RF_Read($PODCAST_PLAYED_FILE)
+    Local $n = UBound($a), $sK = StringLower($sKey), $i, $k = 0
+    Local $aOut[$n + 1]
+    For $i = 0 To $n - 1
+        If StringLower($a[$i]) = $sK Then ContinueLoop
+        $aOut[$k] = $a[$i]
+        $k += 1
+    Next
+    If $bPlayed Then
+        $aOut[$k] = $sKey
+        $k += 1
+    Else
+        _LocalPos_Clear("pod:" & $sKey)
+    EndIf
+    Local $iFrom = 0
+    If $k > 3000 Then $iFrom = $k - 3000
+    Local $aFinal[$k - $iFrom]
+    For $i = $iFrom To $k - 1
+        $aFinal[$i - $iFrom] = $aOut[$i]
+    Next
+    _RF_Write($PODCAST_PLAYED_FILE, $aFinal)
+EndFunc
+
+; Saved positions as a dictionary: lower case "pod:key" -> milliseconds (only episodes really started and not finished)
+Func _Pod_PosDict()
+    Local $oD = ObjCreate("Scripting.Dictionary")
+    If Not IsObj($oD) Then Return 0
+    Local $a = _RF_Read($LOCAL_POSITIONS_FILE), $p
+    For $i = 0 To UBound($a) - 1
+        If StringLeft($a[$i], 4) <> "pod:" Then ContinueLoop
+        $p = StringSplit($a[$i], "|", 2)
+        If UBound($p) < 2 Then ContinueLoop
+        If Int($p[1]) >= 3000 Then $oD.Item(StringLower($p[0])) = Int($p[1])
+    Next
+    Return $oD
+EndFunc
+
+Func _Pod_Search($sTerm)
+    Local $aNone[1][4]
+    Local $sJson = _Pod_Http("https://itunes.apple.com/search?media=podcast&entity=podcast&limit=40&term=" & _URLEncode($sTerm), 20000)
+    If $sJson = "" Then Return 0
+    Local $aObj = StringRegExp($sJson, '\{[^{}]*\}', 3)
+    If @error Or Not IsArray($aObj) Then Return $aNone
+    Local $aOut[UBound($aObj)][4], $n = 0, $sFeed, $sName, $i
+    For $i = 0 To UBound($aObj) - 1
+        $sFeed = _Json_Str($aObj[$i], "feedUrl")
+        $sName = _Json_Str($aObj[$i], "collectionName")
+        If $sName = "" Then $sName = _Json_Str($aObj[$i], "trackName")
+        If $sFeed = "" Or $sName = "" Then ContinueLoop
+        $aOut[$n][0] = _Pod_Clean($sName)
+        $aOut[$n][1] = _Pod_Clean(_Json_Str($aObj[$i], "artistName"))
+        $aOut[$n][2] = $sFeed
+        $aOut[$n][3] = _Json_Num($aObj[$i], "trackCount")
+        $n += 1
+    Next
+    If $n = 0 Then Return $aNone
+    ReDim $aOut[$n][4]
+    Return $aOut
+EndFunc
+
+Func _Pod_ShowText($sTitle, $sText, $hParent)
+    Local $hGui = GUICreate($sTitle, 500, 400, -1, -1, BitOR($WS_CAPTION, $WS_SYSMENU), $WS_EX_TOPMOST, IsHWnd($hParent) ? $hParent : 0)
+    GUISetBkColor($COLOR_BLUE)
+    Local $edt = GUICtrlCreateEdit($sText, 10, 10, 480, 340, BitOR($ES_READONLY, $ES_MULTILINE, $WS_VSCROLL, $ES_AUTOVSCROLL))
+    Local $btnClose = GUICtrlCreateButton(_T("&Close"), 195, 360, 110, 32, $BS_DEFPUSHBUTTON)
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $aAcc[1][2] = [["{ESC}", $hDummyEsc]]
+    GUISetAccelerators($aAcc, $hGui)
+    GUISetState(@SW_SHOW, $hGui)
+    _AllowUIPI($hGui)
+    ControlFocus($hGui, "", $edt)
+    Local $nMsg
+    While 1
+        $nMsg = _GuiMsg($hGui)
+        If $nMsg = $GUI_EVENT_CLOSE Or $nMsg = $btnClose Or $nMsg = $hDummyEsc Then ExitLoop
+        Sleep(10)
+    WEnd
+    GUIDelete($hGui)
+    If IsHWnd($hParent) Then
+        GUISwitch($hParent)
+        WinActivate($hParent)
+    EndIf
+EndFunc
+
+; Chapters of an episode: chapters file of the feed (Podcasting 2.0 JSON), else time stamps in the show notes
+Func _Pod_LoadChapters(ByRef $aEp, $i)
+    Local $aT[1], $aN[1], $n = 0, $sJson, $aObj, $k, $m, $sT
+    If $aEp[$i][5] <> "" Then
+        $sJson = _Pod_Http($aEp[$i][5], 8000)
+        If $sJson <> "" Then
+            $aObj = StringRegExp($sJson, '\{[^{}]*\}', 3)
+            If IsArray($aObj) Then
+                ReDim $aT[UBound($aObj)]
+                ReDim $aN[UBound($aObj)]
+                For $k = 0 To UBound($aObj) - 1
+                    $m = StringRegExp($aObj[$k], '"startTime"\s*:\s*(-?[0-9.]+)', 1)
+                    If @error Or Not IsArray($m) Then ContinueLoop
+                    $sT = _Json_Str($aObj[$k], "title")
+                    If $sT = "" Then ContinueLoop
+                    $aT[$n] = Number($m[0])
+                    $aN[$n] = StringStripWS($sT, 7)
+                    $n += 1
+                Next
+            EndIf
+        EndIf
+    EndIf
+    If $n < 1 Then
+        $n = _Chap_FromText($aEp[$i][6], $aT, $aN)
+    EndIf
+    If $n > 0 Then
+        ReDim $aT[$n]
+        ReDim $aN[$n]
+        _Chap_Set($aT, $aN, $n)
+    EndIf
+EndFunc
+
+; Plays the episodes of a list one after the other. Shift+N / Shift+B = next / previous episode in the list; N toggles auto-play
+Func _Pod_PlayList(ByRef $aEp, $iStart, $iCount)
+    Local $i = $iStart, $sAct, $sKey
+    While $i >= 0 And $i < $iCount
+        $sKey = $aEp[$i][4]
+        _Chap_Reset()
+        _Pod_LoadChapters($aEp, $i)
+        $g_bLocalPlaylistMode = False
+        _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
+        $sAct = _PlayInternal($aEp[$i][1], $aEp[$i][0], True, 0, True, "pod:" & $sKey, False, True)
+        If $g_bTrackEnded Then _Pod_MarkPlayed($sKey, True)
+        If $sAct = "NEXT" Or ($sAct = "FINISHED" And $g_bAutoPlay) Then
+            $i += 1
+        ElseIf $sAct = "BACK" Then
+            $i -= 1
+        ElseIf $sAct = "RESTART" Then
+            ; same episode again
+        Else
+            ExitLoop
+        EndIf
+    WEnd
+    _Chap_Reset()
+EndFunc
+
+Func _Pod_FillList($lst, ByRef $aEp, $iCount, $iNew, $bShowName)
+    Local $sPlayed = _Pod_PlayedSet(), $oPos = _Pod_PosDict(), $s = "", $sLab, $sKey, $bPlayed, $iMs, $i
+    For $i = 0 To $iCount - 1
+        $sKey = StringLower($aEp[$i][4])
+        $bPlayed = (StringInStr($sPlayed, @LF & $sKey & @LF) > 0)
+        $sLab = ""
+        If $i < $iNew And Not $bPlayed Then $sLab = _T("New") & ": "
+        If $bShowName And $aEp[$i][7] <> "" Then $sLab &= $aEp[$i][7] & " - "
+        $sLab &= $aEp[$i][0]
+        If $aEp[$i][2] <> "" Then $sLab &= ", " & $aEp[$i][2]
+        If $aEp[$i][3] > 0 Then $sLab &= ", " & _FormatTime($aEp[$i][3])
+        If $bPlayed Then
+            $sLab &= ", " & _T("Played")
+        ElseIf IsObj($oPos) Then
+            If $oPos.Exists("pod:" & $sKey) Then
+                $iMs = $oPos.Item("pod:" & $sKey)
+                $sLab &= ", " & _TF("Listened to {1}", _FormatTime(Int($iMs / 1000)))
+            EndIf
+        EndIf
+        $s &= StringReplace($sLab, "|", "/") & "|"
+    Next
+    GUICtrlSetData($lst, "")
+    If $s <> "" Then GUICtrlSetData($lst, StringTrimRight($s, 1))
+EndFunc
+
+; Episode list window. $sFeed = "" for the combined "New episodes" list.
+Func _Pod_EpisodeList(ByRef $aEp, $iCount, $sWinTitle, $sFeed, $sFeedTitle, $sAuthor, $iNew, $bCombined)
+    Local $hGui = GUICreate($sWinTitle, 520, 490)
+    GUISetBkColor($COLOR_BLUE)
+    Local $sHead = $sFeedTitle
+    If $sAuthor <> "" Then $sHead &= " - " & $sAuthor
+    If $sHead = "" Then $sHead = $sWinTitle
+    GUICtrlCreateLabel($sHead, 10, 8, 500, 20, $SS_NOPREFIX)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    GUICtrlCreateLabel(_TF("{1} episodes. Press Enter to play.", $iCount), 10, 28, 500, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $lst = GUICtrlCreateList("", 10, 52, 500, 330, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
+    Local $btnPlay = GUICtrlCreateButton(_T("&Play"), 10, 392, 160, 32, $BS_DEFPUSHBUTTON)
+    Local $btnSub = GUICtrlCreateButton(_T("&Subscribe (Ctrl+D)"), 180, 392, 160, 32)
+    Local $btnMark = GUICtrlCreateButton(_T("Mark as pla&yed (Ctrl+M)"), 350, 392, 160, 32)
+    Local $btnCopy = GUICtrlCreateButton(_T("Copy episode &link (Ctrl+K)"), 10, 432, 160, 32)
+    Local $btnNotes = GUICtrlCreateButton(_T("Show &notes (Ctrl+I)"), 180, 432, 160, 32)
+    Local $btnClose = GUICtrlCreateButton(_T("&Close"), 350, 432, 160, 32)
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $aAcc[5][2] = [["{ESC}", $hDummyEsc], ["^d", $btnSub], ["^m", $btnMark], ["^k", $btnCopy], ["^i", $btnNotes]]
+    GUISetAccelerators($aAcc, $hGui)
+    Local $bSubscribed = False
+    If $sFeed = "" Then
+        GUICtrlSetState($btnSub, $GUI_DISABLE)
+    Else
+        $bSubscribed = _Pod_IsSubscribed($sFeed)
+        If $bSubscribed Then GUICtrlSetData($btnSub, _T("Un&subscribe (Ctrl+D)"))
+    EndIf
+    _Pod_FillList($lst, $aEp, $iCount, $iNew, $bCombined)
+    If $iCount > 0 Then _GUICtrlListBox_SetCurSel($lst, 0)
+    GUISetState(@SW_SHOW, $hGui)
+    _AllowUIPI($hGui)
+    ControlFocus($hGui, "", $lst)
+    If $bSubscribed And $iCount > 0 Then
+        _Pod_SetSeen($sFeed, $aEp[0][4])
+        _Sub_SetNew("pod", $sFeed, 0)
+    EndIf
+    Local $nMsg, $iSel, $iRes
+    While 1
+        $nMsg = _GuiMsg($hGui)
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnClose, $hDummyEsc
+                ExitLoop
+            Case $btnPlay
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                If $iSel >= 0 And $iSel < $iCount Then
+                    _Pod_PlayList($aEp, $iSel, $iCount)
+                    GUISwitch($hGui)
+                    _Pod_FillList($lst, $aEp, $iCount, $iNew, $bCombined)
+                    _GUICtrlListBox_SetCurSel($lst, $iSel)
+                    WinActivate($hGui)
+                    ControlFocus($hGui, "", $lst)
+                EndIf
+            Case $btnSub
+                If $sFeed <> "" Then
+                    If $bSubscribed Then
+                        If _Pod_Unsubscribe($sFeed) Then
+                            $bSubscribed = False
+                            GUICtrlSetData($btnSub, _T("&Subscribe (Ctrl+D)"))
+                            _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
+                            _ReportStatus(_T("Unsubscribed"))
+                        EndIf
+                    Else
+                        $iRes = _Pod_Subscribe($sFeed, $sFeedTitle, $sAuthor, $iCount > 0 ? $aEp[0][4] : "")
+                        If $iRes >= 0 Then
+                            $bSubscribed = True
+                            GUICtrlSetData($btnSub, _T("Un&subscribe (Ctrl+D)"))
+                            _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
+                            _ReportStatus(_T("Subscribed"))
+                        Else
+                            _ReportStatus(_T("Could not save the subscription"))
+                        EndIf
+                    EndIf
+                EndIf
+            Case $btnMark
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                If $iSel >= 0 And $iSel < $iCount Then
+                    If StringInStr(_Pod_PlayedSet(), @LF & StringLower($aEp[$iSel][4]) & @LF) Then
+                        _Pod_MarkPlayed($aEp[$iSel][4], False)
+                        _ReportStatus(_T("Marked as not played"))
+                    Else
+                        _Pod_MarkPlayed($aEp[$iSel][4], True)
+                        _LocalPos_Clear("pod:" & $aEp[$iSel][4])
+                        _ReportStatus(_T("Marked as played"))
+                    EndIf
+                    _Pod_FillList($lst, $aEp, $iCount, $iNew, $bCombined)
+                    _GUICtrlListBox_SetCurSel($lst, $iSel)
+                EndIf
+            Case $btnCopy
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                If $iSel >= 0 And $iSel < $iCount Then
+                    ClipPut($aEp[$iSel][1])
+                    _ReportStatus(_T("Link copied to clipboard"))
+                EndIf
+            Case $btnNotes
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                If $iSel >= 0 And $iSel < $iCount Then
+                    If $aEp[$iSel][6] = "" Then
+                        _ReportStatus(_T("This episode has no show notes."))
+                    Else
+                        _Pod_ShowText($aEp[$iSel][0], $aEp[$iSel][6], $hGui)
+                        ControlFocus($hGui, "", $lst)
+                    EndIf
+                EndIf
+        EndSwitch
+        Sleep(10)
+    WEnd
+    GUIDelete($hGui)
+EndFunc
+
+; Downloads a feed and opens its episode list
+Func _Pod_OpenFeed($sFeed, $hParent)
+    Local $hLoad = _Radio_Loading(_T("Loading the podcast..."))
+    _Snd_LoadStart()
+    Local $sXml = _Pod_Http($sFeed, 30000)
+    Local $sTitle = "", $sAuthor = ""
+    Local $aEp = _Pod_ParseFeed($sXml, $sTitle, $sAuthor)
+    GUIDelete($hLoad)
+    _Snd_LoadStop()
+    If IsHWnd($hParent) Then GUISwitch($hParent)
+    If Not IsArray($aEp) Then
+        _AppSoundPlay(@ScriptDir & "\sounds\error.wav")
+        MsgBox(48, _T("Podcasts"), _T("Cannot read this podcast. Check the link and your internet connection."))
+        Return
+    EndIf
+    _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
+    Local $aSub = _Pod_SubLoad(), $sSeen = "", $iNew = 0, $iCount = UBound($aEp)
+    If IsArray($aSub) Then
+        For $i = 0 To UBound($aSub) - 1
+            If StringLower($aSub[$i][0]) = StringLower($sFeed) Then
+                $sSeen = $aSub[$i][3]
+                ExitLoop
+            EndIf
+        Next
+    EndIf
+    $iNew = _Pod_NewCount($aEp, $iCount, $sSeen)
+    If $sTitle = "" Then $sTitle = $sFeed
+    _Pod_EpisodeList($aEp, $iCount, $sTitle, $sFeed, $sTitle, $sAuthor, $iNew, False)
+    If IsHWnd($hParent) Then
+        GUISwitch($hParent)
+        WinActivate($hParent)
+    EndIf
+EndFunc
+
+Func _Pod_ResultsWindow($sTerm, $hParent)
+    Local $hLoad = _Radio_Loading(_T("Searching..."))
+    _Snd_LoadStart()
+    Local $aRes = _Pod_Search($sTerm)
+    GUIDelete($hLoad)
+    _Snd_LoadStop()
+    If IsHWnd($hParent) Then GUISwitch($hParent)
+    If Not IsArray($aRes) Then
+        _AppSoundPlay(@ScriptDir & "\sounds\no_internet.wav")
+        MsgBox(48, _T("Podcasts"), _T("Cannot search podcasts now. Check your internet connection."))
+        Return
+    EndIf
+    If $aRes[0][2] = "" Then
+        MsgBox(64, _T("Podcasts"), _T("No podcasts found."))
+        Return
+    EndIf
+    _AppSoundPlay(@ScriptDir & "\sounds\result.wav")
+    Local $n = UBound($aRes), $i, $s = ""
+    Local $hGui = GUICreate(_T("Podcast results"), 520, 440)
+    GUISetBkColor($COLOR_BLUE)
+    GUICtrlCreateLabel(_TF("{1} podcasts found. Press Enter to open one.", $n), 10, 10, 500, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $lst = GUICtrlCreateList("", 10, 36, 500, 330, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
+    Local $btnOpen = GUICtrlCreateButton(_T("&Open"), 100, 382, 140, 34, $BS_DEFPUSHBUTTON)
+    Local $btnClose = GUICtrlCreateButton(_T("&Close"), 280, 382, 140, 34)
+    For $i = 0 To $n - 1
+        $s &= StringReplace($aRes[$i][0] & ", " & $aRes[$i][1] & ", " & _TF("{1} episodes", $aRes[$i][3]), "|", "/") & "|"
+    Next
+    GUICtrlSetData($lst, StringTrimRight($s, 1))
+    _GUICtrlListBox_SetCurSel($lst, 0)
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $aAcc[1][2] = [["{ESC}", $hDummyEsc]]
+    GUISetAccelerators($aAcc, $hGui)
+    GUISetState(@SW_SHOW, $hGui)
+    _AllowUIPI($hGui)
+    ControlFocus($hGui, "", $lst)
+    Local $nMsg, $iSel
+    While 1
+        $nMsg = _GuiMsg($hGui)
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnClose, $hDummyEsc
+                ExitLoop
+            Case $btnOpen
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                If $iSel >= 0 And $iSel < $n Then
+                    _Pod_OpenFeed($aRes[$iSel][2], $hGui)
+                    GUISwitch($hGui)
+                    WinActivate($hGui)
+                    ControlFocus($hGui, "", $lst)
+                EndIf
+        EndSwitch
+        Sleep(10)
+    WEnd
+    GUIDelete($hGui)
+    If IsHWnd($hParent) Then
+        GUISwitch($hParent)
+        WinActivate($hParent)
+    EndIf
+EndFunc
+
+; Downloads all subscribed feeds: $aCnt[i] = number of new episodes (-1 = could not be read), $aComb = the new episodes that are not played yet
+Func _Pod_FetchAll(ByRef $aSub, ByRef $aCnt, ByRef $aComb, ByRef $nComb)
+    Local $nSub = UBound($aSub), $i, $j, $k, $sXml, $sT, $sA, $aEp, $iNew, $iEpN
+    Local $sPlayed = _Pod_PlayedSet()
+    Local $hLoad = _Radio_Loading(_T("Checking for new episodes..."))
+    _Snd_LoadStart()
+    For $i = 0 To $nSub - 1
+        $aCnt[$i] = -1
+        $sXml = _Pod_Http($aSub[$i][0], 15000)
+        If $sXml = "" Then ContinueLoop
+        $aEp = _Pod_ParseFeed($sXml, $sT, $sA)
+        If Not IsArray($aEp) Then ContinueLoop
+        $iEpN = UBound($aEp)
+        $iNew = _Pod_NewCount($aEp, $iEpN, $aSub[$i][3])
+        $aCnt[$i] = $iNew
+        _Sub_SetNew("pod", $aSub[$i][0], $iNew)
+        If $iNew > 0 Then _Sub_NotifiedSet("pod:" & $aSub[$i][0], $aEp[0][4]) ; already known: not announced again at startup
+        For $k = 0 To $iNew - 1
+            If $nComb >= UBound($aComb) Then ExitLoop
+            If StringInStr($sPlayed, @LF & StringLower($aEp[$k][4]) & @LF) Then ContinueLoop
+            For $j = 0 To 6
+                $aComb[$nComb][$j] = $aEp[$k][$j]
+            Next
+            $aComb[$nComb][7] = $aSub[$i][1]
+            $aComb[$nComb][8] = $aSub[$i][0]
+            $nComb += 1
+        Next
+    Next
+    GUIDelete($hLoad)
+    _Snd_LoadStop()
+    If $nComb > 0 Then
+        _AppSoundPlay(@ScriptDir & "\sounds\new_content.wav")
+    Else
+        _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
+    EndIf
+EndFunc
+
+Func _Pod_NewEpisodes($hParent)
+    Local $aSub = _Pod_SubLoad()
+    If Not IsArray($aSub) Then
+        MsgBox(64, _T("Podcasts"), _T("You have no subscriptions yet. Search for a podcast, open it and press Ctrl+D to subscribe."))
+        Return
+    EndIf
+    Local $aCnt[UBound($aSub)], $aComb[200][9], $nComb = 0
+    _Pod_FetchAll($aSub, $aCnt, $aComb, $nComb)
+    If IsHWnd($hParent) Then GUISwitch($hParent)
+    If $nComb = 0 Then
+        MsgBox(64, _T("Podcasts"), _T("There are no new episodes."))
+        Return
+    EndIf
+    _Pod_EpisodeList($aComb, $nComb, _T("New episodes"), "", "", "", $nComb, True)
+    If IsHWnd($hParent) Then
+        GUISwitch($hParent)
+        WinActivate($hParent)
+    EndIf
+EndFunc
+
+Func _Pod_SubLabel(ByRef $aSub, $i, $iNew)
+    Local $s = $aSub[$i][1]
+    If $aSub[$i][2] <> "" Then $s &= ", " & $aSub[$i][2]
+    If $iNew > 0 Then $s &= ", " & _TF("{1} new", $iNew)
+    Return $s
+EndFunc
+
+Func _Pod_SubsWindow($hParent)
+    Local $aSub = _Pod_SubLoad()
+    If Not IsArray($aSub) Then
+        MsgBox(64, _T("Podcasts"), _T("You have no subscriptions yet. Search for a podcast, open it and press Ctrl+D to subscribe."))
+        Return
+    EndIf
+    Local $nSub = UBound($aSub), $i, $s
+    Local $aCnt[$nSub]
+    For $i = 0 To $nSub - 1
+        $aCnt[$i] = _Sub_GetNew("pod", $aSub[$i][0])
+    Next
+    Local $hGui = GUICreate(_T("My subscriptions"), 520, 440)
+    GUISetBkColor($COLOR_BLUE)
+    Local $lblInfo = GUICtrlCreateLabel(_TF("{1} subscriptions. Press Enter to open one.", $nSub), 10, 10, 500, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $lst = GUICtrlCreateList("", 10, 36, 500, 320, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
+    Local $btnOpen = GUICtrlCreateButton(_T("&Open"), 10, 372, 120, 34, $BS_DEFPUSHBUTTON)
+    Local $btnCheck = GUICtrlCreateButton(_T("Chec&k for new episodes"), 140, 372, 180, 34)
+    Local $btnDel = GUICtrlCreateButton(_T("&Unsubscribe (Delete)"), 330, 372, 180, 34)
+    Local $btnClose = GUICtrlCreateButton(_T("&Close"), 195, 410, 130, 26)
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $aAcc[2][2] = [["{ESC}", $hDummyEsc], ["{DEL}", $btnDel]]
+    GUISetAccelerators($aAcc, $hGui)
+    GUISetState(@SW_SHOW, $hGui)
+    _AllowUIPI($hGui)
+    Local $iSel, $aComb[200][9], $nComb
+    ; the list is filled by _Pod_SubRefresh below
+    $s = ""
+    For $i = 0 To $nSub - 1
+        $s &= StringReplace(_Pod_SubLabel($aSub, $i, $aCnt[$i]), "|", "/") & "|"
+    Next
+    GUICtrlSetData($lst, StringTrimRight($s, 1))
+    _GUICtrlListBox_SetCurSel($lst, 0)
+    ControlFocus($hGui, "", $lst)
+    Local $nMsg
+    While 1
+        $nMsg = _GuiMsg($hGui)
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnClose, $hDummyEsc
+                ExitLoop
+            Case $btnOpen
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                If $iSel >= 0 And $iSel < $nSub Then
+                    _Pod_OpenFeed($aSub[$iSel][0], $hGui)
+                    GUISwitch($hGui)
+                    $aSub = _Pod_SubLoad()
+                    If IsArray($aSub) Then
+                        If UBound($aSub) = $nSub Then $aCnt[$iSel] = _Sub_GetNew("pod", $aSub[$iSel][0])
+                    EndIf
+                    WinActivate($hGui)
+                    ControlFocus($hGui, "", $lst)
+                EndIf
+            Case $btnCheck
+                $nComb = 0
+                _Pod_FetchAll($aSub, $aCnt, $aComb, $nComb)
+                GUISwitch($hGui)
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                $s = ""
+                For $i = 0 To $nSub - 1
+                    $s &= StringReplace(_Pod_SubLabel($aSub, $i, $aCnt[$i]), "|", "/") & "|"
+                Next
+                GUICtrlSetData($lst, "")
+                GUICtrlSetData($lst, StringTrimRight($s, 1))
+                If $iSel < 0 Then $iSel = 0
+                _GUICtrlListBox_SetCurSel($lst, $iSel)
+                WinActivate($hGui)
+                ControlFocus($hGui, "", $lst)
+                _ReportStatus(_TF("{1} new episodes", $nComb))
+            Case $btnDel
+                $iSel = _GUICtrlListBox_GetCurSel($lst)
+                If $iSel >= 0 And $iSel < $nSub Then
+                    If MsgBox(36, _T("Podcasts"), _TF("Unsubscribe from {1}?", $aSub[$iSel][1]), 0, $hGui) = 6 Then
+                        _Pod_Unsubscribe($aSub[$iSel][0])
+                        ExitLoop
+                    EndIf
+                EndIf
+        EndSwitch
+        Sleep(10)
+    WEnd
+    GUIDelete($hGui)
+    If IsHWnd($hParent) Then
+        GUISwitch($hParent)
+        WinActivate($hParent)
+    EndIf
+EndFunc
+
+; Main window > Podcasts (Alt+K)
+Func _ShowPodcasts()
+    Local $hGui = GUICreate(_T("Podcasts"), 420, 200)
+    GUISetBkColor($COLOR_BLUE)
+    GUICtrlCreateLabel(_T("Search for a podcast, or paste an RSS feed link:"), 10, 12, 400, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $inp = GUICtrlCreateInput("", 10, 36, 400, 22)
+    _TypeSnd_Attach($inp) ; typing sounds, like the search box
+    Local $btnSearch = GUICtrlCreateButton(_T("&Search"), 10, 72, 190, 34, $BS_DEFPUSHBUTTON)
+    Local $btnSubs = GUICtrlCreateButton(_T("My s&ubscriptions"), 220, 72, 190, 34)
+    Local $btnNew = GUICtrlCreateButton(_T("&New episodes"), 10, 114, 190, 34)
+    Local $btnClose = GUICtrlCreateButton(_T("&Close"), 220, 114, 190, 34)
+    Local $hDummyEsc = GUICtrlCreateDummy()
+    Local $aAcc[1][2] = [["{ESC}", $hDummyEsc]]
+    GUISetAccelerators($aAcc, $hGui)
+    GUISetState(@SW_SHOW, $hGui)
+    _AllowUIPI($hGui)
+    ControlFocus($hGui, "", $inp)
+    Local $nMsg, $sTerm
+    While 1
+        $nMsg = _GuiMsg($hGui)
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnClose, $hDummyEsc
+                ExitLoop
+            Case $btnSearch
+                $sTerm = StringStripWS(GUICtrlRead($inp), 3)
+                If $sTerm = "" Then
+                    _ReportStatus(_T("Please enter a search term."))
+                    ControlFocus($hGui, "", $inp)
+                ElseIf _IsWebLink($sTerm) Then
+                    _Pod_OpenFeed($sTerm, $hGui)
+                    GUISwitch($hGui)
+                    WinActivate($hGui)
+                    ControlFocus($hGui, "", $inp)
+                Else
+                    _Pod_ResultsWindow($sTerm, $hGui)
+                    GUISwitch($hGui)
+                    WinActivate($hGui)
+                    ControlFocus($hGui, "", $inp)
+                EndIf
+            Case $btnSubs
+                _Pod_SubsWindow($hGui)
+                GUISwitch($hGui)
+                WinActivate($hGui)
+            Case $btnNew
+                _Pod_NewEpisodes($hGui)
+                GUISwitch($hGui)
+                WinActivate($hGui)
+        EndSwitch
+        Sleep(10)
+    WEnd
+    _TypeSnd_Detach()
+    GUIDelete($hGui)
+EndFunc
+
+
+; ======================================================================
+;  EXTRA SEARCH SOURCES (version 3.3) - Search window > Source
+;  SoundCloud: yt-dlp keyword search ("scsearch"). Results use the full link of the item as their id.
+; ======================================================================
+; "https://soundcloud.com/artist/some-track-name" -> "some track name" (artist returned in $sUp)
+Func _Search_TitleFromUrl($sUrl, ByRef $sUp)
+    Local $sPath = StringRegExpReplace($sUrl, '^(?i)https?://[^/]+/', '')
+    $sPath = StringRegExpReplace($sPath, '[?#].*$', '')
+    Local $aSeg = StringSplit($sPath, "/", 2)
+    If UBound($aSeg) >= 2 Then
+        If $sUp = "" Then $sUp = StringReplace($aSeg[0], "-", " ")
+        Return StringReplace($aSeg[UBound($aSeg) - 1], "-", " ")
+    EndIf
+    Return $sUrl
+EndFunc
+
+
+; ======================================================================
+;  SUBSCRIPTIONS (version 3.2)
+;  - YouTube channels: subscribe, My subscriptions, check for new videos
+;  - Podcasts + YouTube: check for new content when the application starts (new_content.wav)
+;  - Sounds for the podcast window, typing sounds in its search box
+; ======================================================================
+
+; ---------- sounds ----------
+Func _Snd_LoadStart()
+    _AppPlaySoundW(@ScriptDir & "\sounds\loading.wav", 0x0009)
+EndFunc
+
+Func _Snd_LoadStop()
+    DllCall("winmm.dll", "int", "PlaySoundW", "ptr", 0, "ptr", 0, "dword", 0)
+EndFunc
+
+; ---------- typing sounds in an input box (same sounds as the search box) ----------
+Func _TypeEditProc($hWnd, $iMsg, $wParam, $lParam)
+    Local $aRet = DllCall("user32.dll", "lresult", "CallWindowProcW", "ptr", $g_pTypeOld, "hwnd", $hWnd, "uint", $iMsg, "wparam", $wParam, "lparam", $lParam)
+    If $iMsg = 0x0100 Then ; WM_KEYDOWN (same behaviour as the search box)
+        If BitAND($lParam, 0x40000000) = 0 Then
+            If $wParam <> $g_iLastVkCode Or TimerDiff($g_iLastHookTime) > 50 Then
+                $g_iLastVkCode = $wParam
+                $g_iLastHookTime = TimerInit()
+                If $wParam < 0x25 Or $wParam > 0x28 Then _PlayTypingSound($wParam)
+            EndIf
+        EndIf
+    EndIf
+    If @error Or Not IsArray($aRet) Then Return 0
+    Return $aRet[0]
+EndFunc
+
+Func _TypeSnd_Attach($idInput)
+    _TypeSnd_Detach()
+    $g_hTypeEdit = GUICtrlGetHandle($idInput)
+    If Not IsHWnd($g_hTypeEdit) Then Return
+    $g_hTypeCb = DllCallbackRegister("_TypeEditProc", "lresult", "hwnd;uint;wparam;lparam")
+    Local $aRet = DllCall("user32.dll", "ptr", "SetWindowLong" & (@AutoItX64 ? "Ptr" : "") & "W", "hwnd", $g_hTypeEdit, "int", -4, "ptr", DllCallbackGetPtr($g_hTypeCb))
+    If @error Or Not IsArray($aRet) Then
+        DllCallbackFree($g_hTypeCb)
+        $g_hTypeCb = 0
+        Return
+    EndIf
+    $g_pTypeOld = $aRet[0]
+EndFunc
+
+Func _TypeSnd_Detach()
+    If $g_hTypeCb = 0 Then Return
+    If IsHWnd($g_hTypeEdit) And $g_pTypeOld <> 0 Then
+        DllCall("user32.dll", "ptr", "SetWindowLong" & (@AutoItX64 ? "Ptr" : "") & "W", "hwnd", $g_hTypeEdit, "int", -4, "ptr", $g_pTypeOld)
+    EndIf
+    DllCallbackFree($g_hTypeCb)
+    $g_hTypeCb = 0
+    $g_pTypeOld = 0
+    $g_hTypeEdit = 0
+EndFunc
+
+; ---------- Settings: the list of typing sounds exists only while the option is on ----------
+Func _Settings_SyncTypingSet($idChk, $idLbl, $idCbo)
+    Local Static $hT = 0
+    If $hT <> 0 And TimerDiff($hT) < 100 Then Return
+    $hT = TimerInit()
+    If _GUICtrlTab_GetCurSel(GUICtrlGetHandle($g_hSettingsTab)) <> 4 Then Return ; only on the Search tab
+    Local $bWant = (GUICtrlRead($idChk) = $GUI_CHECKED)
+    Local $aVis = DllCall("user32.dll", "bool", "IsWindowVisible", "hwnd", GUICtrlGetHandle($idCbo))
+    Local $bVis = (Not @error And IsArray($aVis) And $aVis[0] <> 0)
+    If $bWant And Not $bVis Then
+        GUICtrlSetState($idLbl, BitOR($GUI_SHOW, $GUI_ENABLE))
+        GUICtrlSetState($idCbo, BitOR($GUI_SHOW, $GUI_ENABLE))
+    ElseIf (Not $bWant) And $bVis Then
+        GUICtrlSetState($idLbl, BitOR($GUI_HIDE, $GUI_DISABLE))
+        GUICtrlSetState($idCbo, BitOR($GUI_HIDE, $GUI_DISABLE))
+    EndIf
+EndFunc
+
+; ---------- counters of new items (kept while the application runs) ----------
+Func _Sub_GetNew($sType, $sId)
+    If Not IsObj($g_oSubNew) Then Return 0
+    Local $k = $sType & ":" & StringLower($sId)
+    If $g_oSubNew.Exists($k) Then Return $g_oSubNew.Item($k)
+    Return 0
+EndFunc
+
+Func _Sub_SetNew($sType, $sId, $n)
+    If Not IsObj($g_oSubNew) Then $g_oSubNew = ObjCreate("Scripting.Dictionary")
+    If Not IsObj($g_oSubNew) Then Return
+    $g_oSubNew.Item($sType & ":" & StringLower($sId)) = $n
+EndFunc
+
+; ---------- what was already announced (so the same news is not announced at every start) ----------
+Func _Sub_NotifiedKey($s)
+    Return StringReplace(StringLower($s), "|", "/")
+EndFunc
+
+Func _Sub_NotifiedGet($sKey)
+    Local $a = _RF_Read($SUB_NOTIFIED_FILE), $i, $p
+    $sKey = _Sub_NotifiedKey($sKey)
+    For $i = 0 To UBound($a) - 1
+        $p = StringSplit($a[$i], "|", 2)
+        If UBound($p) >= 2 And $p[0] = $sKey Then Return $p[1]
+    Next
+    Return ""
+EndFunc
+
+Func _Sub_NotifiedSet($sKey, $sVal)
+    Local $a = _RF_Read($SUB_NOTIFIED_FILE), $i, $p, $k = 0
+    Local $aOut[UBound($a) + 1]
+    $sKey = _Sub_NotifiedKey($sKey)
+    For $i = 0 To UBound($a) - 1
+        $p = StringSplit($a[$i], "|", 2)
+        If UBound($p) >= 2 And $p[0] = $sKey Then ContinueLoop
+        $aOut[$k] = $a[$i]
+        $k += 1
+    Next
+    $aOut[$k] = $sKey & "|" & _Pod_Clean($sVal)
+    $k += 1
+    ReDim $aOut[$k]
+    _RF_Write($SUB_NOTIFIED_FILE, $aOut)
+EndFunc
+
+; ---------- YouTube subscriptions: storage ----------
+; "UCxxxx" or "@handle" -> page with the videos of the channel
+Func _YTS_ChannelUrl($sChan)
+    If StringLeft($sChan, 1) = "@" Then Return "https://www.youtube.com/" & $sChan & "/videos"
+    Return "https://www.youtube.com/channel/" & $sChan & "/videos"
+EndFunc
+
+; Returns a [n][3] array (channel id, name, id of the newest video already seen) or 0
+Func _YTS_Load()
+    Local $a = _RF_Read($YT_SUBS_FILE)
+    Local $n = UBound($a)
+    If $n = 0 Then Return 0
+    Local $aOut[$n][3], $p, $k = 0, $i
+    For $i = 0 To $n - 1
+        $p = StringSplit($a[$i], "|", 2)
+        If UBound($p) < 2 Or $p[0] = "" Then ContinueLoop
+        $aOut[$k][0] = $p[0]
+        $aOut[$k][1] = $p[1]
+        $aOut[$k][2] = ""
+        If UBound($p) >= 3 Then $aOut[$k][2] = $p[2]
+        $k += 1
+    Next
+    If $k = 0 Then Return 0
+    ReDim $aOut[$k][3]
+    Return $aOut
+EndFunc
+
+Func _YTS_Save(ByRef $aSub)
+    Local $n = UBound($aSub), $i
+    Local $aLines[$n]
+    For $i = 0 To $n - 1
+        $aLines[$i] = $aSub[$i][0] & "|" & _Pod_Clean($aSub[$i][1]) & "|" & $aSub[$i][2]
+    Next
+    _RF_Write($YT_SUBS_FILE, $aLines)
+EndFunc
+
+Func _YTS_IsSubscribed($sChan)
+    Local $a = _YTS_Load(), $i
+    If Not IsArray($a) Then Return False
+    For $i = 0 To UBound($a) - 1
+        If StringLower($a[$i][0]) = StringLower($sChan) Then Return True
+    Next
+    Return False
+EndFunc
+
+Func _YTS_GetSeen($sChan)
+    Local $a = _YTS_Load(), $i
+    If Not IsArray($a) Then Return ""
+    For $i = 0 To UBound($a) - 1
+        If StringLower($a[$i][0]) = StringLower($sChan) Then Return $a[$i][2]
+    Next
+    Return ""
+EndFunc
+
+; Returns 1 = subscribed, 0 = was already subscribed
+Func _YTS_Subscribe($sChan, $sName, $sSeen)
+    If _YTS_IsSubscribed($sChan) Then Return 0
+    If $sName = "" Then $sName = $sChan
+    Local $a = _YTS_Load(), $n = 0, $i
+    If IsArray($a) Then $n = UBound($a)
+    Local $aOut[$n + 1][3]
+    For $i = 0 To $n - 1
+        $aOut[$i][0] = $a[$i][0]
+        $aOut[$i][1] = $a[$i][1]
+        $aOut[$i][2] = $a[$i][2]
+    Next
+    $aOut[$n][0] = $sChan
+    $aOut[$n][1] = $sName
+    $aOut[$n][2] = $sSeen
+    _YTS_Save($aOut)
+    Return 1
+EndFunc
+
+Func _YTS_Unsubscribe($sChan)
+    Local $a = _YTS_Load(), $i, $k = 0
+    If Not IsArray($a) Then Return False
+    Local $n = UBound($a)
+    If $n = 1 Then
+        If StringLower($a[0][0]) <> StringLower($sChan) Then Return False
+        FileDelete($YT_SUBS_FILE)
+        Return True
+    EndIf
+    Local $aOut[$n][3]
+    For $i = 0 To $n - 1
+        If StringLower($a[$i][0]) = StringLower($sChan) Then ContinueLoop
+        $aOut[$k][0] = $a[$i][0]
+        $aOut[$k][1] = $a[$i][1]
+        $aOut[$k][2] = $a[$i][2]
+        $k += 1
+    Next
+    If $k = $n Then Return False
+    ReDim $aOut[$k][3]
+    _YTS_Save($aOut)
+    Return True
+EndFunc
+
+Func _YTS_SetSeen($sChan, $sKey)
+    Local $a = _YTS_Load(), $i
+    If Not IsArray($a) Then Return
+    For $i = 0 To UBound($a) - 1
+        If StringLower($a[$i][0]) = StringLower($sChan) Then
+            If $a[$i][2] = $sKey Then Return
+            $a[$i][2] = $sKey
+            _YTS_Save($a)
+            Return
+        EndIf
+    Next
+EndFunc
+
+; ---------- YouTube subscriptions: reading a channel ----------
+; Parses the output of yt-dlp (T:title / I:id lines). Returns the number of videos (0-based arrays, newest first)
+Func _YTS_Parse($sOut, ByRef $aIds, ByRef $aTitles)
+    Local $aLines = StringSplit(StringStripCR($sOut), @LF, 2)
+    Local $n = 0, $sT = "", $sLine, $sI, $i
+    Local $aI[UBound($aLines) + 1], $aT[UBound($aLines) + 1]
+    For $i = 0 To UBound($aLines) - 1
+        $sLine = StringStripWS($aLines[$i], 3)
+        If StringLeft($sLine, 2) = "T:" Then
+            $sT = StringTrimLeft($sLine, 2)
+        ElseIf StringLeft($sLine, 2) = "I:" Then
+            $sI = StringTrimLeft($sLine, 2)
+            If $sI <> "" And $sI <> "NA" Then
+                $aI[$n] = $sI
+                $aT[$n] = ($sT = "" Or $sT = "NA") ? _T("Unknown Title") : $sT
+                $n += 1
+            EndIf
+            $sT = ""
+        EndIf
+    Next
+    ReDim $aI[$n]
+    ReDim $aT[$n]
+    $aIds = $aI
+    $aTitles = $aT
+    Return $n
+EndFunc
+
+Func _YTS_CmdFetch($sChan, $iMax)
+    Return $YT_DLP_EXE & ' --flat-playlist --playlist-end ' & $iMax & ' --print "T:%(title)s" --print "I:%(id)s" --no-warnings --encoding utf-8 -- "' & _YTS_ChannelUrl($sChan) & '"'
+EndFunc
+
+; Latest videos of a channel. Returns the number of videos, or -1 when the channel could not be read.
+Func _YTS_Fetch($sChan, $iMax, ByRef $aIds, ByRef $aTitles)
+    Local $iPid = Run(_YTS_CmdFetch($sChan, $iMax), @ScriptDir, @SW_HIDE, $STDOUT_CHILD + $STDERR_CHILD)
+    If @error Or $iPid = 0 Then Return -1
+    Local $bData = Binary(""), $hT = TimerInit()
+    While ProcessExists($iPid)
+        $bData &= StdoutRead($iPid, False, True)
+        StderrRead($iPid)
+        GUIGetMsg()
+        If TimerDiff($hT) > 60000 Then
+            ProcessClose($iPid)
+            Return -1
+        EndIf
+        Sleep(10)
+    WEnd
+    $bData &= StdoutRead($iPid, False, True)
+    Local $n = _YTS_Parse(BinaryToString($bData, 4), $aIds, $aTitles)
+    If $n = 0 Then Return -1
+    Return $n
+EndFunc
+
+; How many videos in the list ($aIds, newest first) are newer than the one already seen
+Func _YTS_NewCount(ByRef $aIds, $n, $sSeen)
+    If $sSeen = "" Or $n = 0 Then Return 0
+    Local $i
+    For $i = 0 To $n - 1
+        If $aIds[$i] = $sSeen Then Return $i
+    Next
+    Return $n
+EndFunc
+
+; Channel of a video: $sChan = channel id, $sName = channel name. Returns True when found.
+Func _YTS_ResolveChannel($sVideoID, ByRef $sChan, ByRef $sName, $hParent = 0)
+    Local $hLoad = GUICreate(_T("Working..."), 250, 80, -1, -1, BitOR($WS_POPUP, $WS_BORDER), BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW), IsHWnd($hParent) ? $hParent : 0)
+    GUICtrlCreateLabel(_T("Fetching channel information..."), 10, 25, 230, 40, $SS_CENTER)
+    GUISetBkColor(0xFFFFFF, $hLoad)
+    GUISetState(@SW_SHOW, $hLoad)
+    _Snd_LoadStart()
+    Local $iPid = Run($YT_DLP_EXE & ' --print "%(channel_id)s" --print "%(channel,uploader)s" --no-playlist --no-warnings --encoding utf-8 -- "' & _VideoLink($sVideoID) & '"', @ScriptDir, @SW_HIDE, $STDOUT_CHILD + $STDERR_CHILD)
+    Local $bData = Binary(""), $hT = TimerInit()
+    If $iPid <> 0 Then
+        While ProcessExists($iPid)
+            $bData &= StdoutRead($iPid, False, True)
+            StderrRead($iPid)
+            GUIGetMsg()
+            If TimerDiff($hT) > 60000 Then
+                ProcessClose($iPid)
+                ExitLoop
+            EndIf
+            Sleep(10)
+        WEnd
+        $bData &= StdoutRead($iPid, False, True)
+    EndIf
+    _Snd_LoadStop()
+    GUIDelete($hLoad)
+    Local $aL = StringSplit(StringStripCR(BinaryToString($bData, 4)), @LF, 2)
+    If UBound($aL) < 1 Then Return False
+    Local $sC = StringStripWS($aL[0], 3)
+    If Not StringRegExp($sC, "^UC[\w-]{20,}$") Then Return False
+    $sChan = $sC
+    $sName = ""
+    If UBound($aL) >= 2 Then $sName = StringStripWS($aL[1], 3)
+    If $sName = "" Or $sName = "NA" Then $sName = $sC
+    Return True
+EndFunc
+
+; Subscribe to / unsubscribe from a channel. Returns 1 = subscribed, 0 = unsubscribed, -1 = nothing done.
+Func _YTS_ToggleChannel($sChan, $sName, $sSeen, $hParent)
+    If _YTS_IsSubscribed($sChan) Then
+        If MsgBox(36, _T("YouTube subscriptions"), _TF("You are subscribed to {1}. Do you want to unsubscribe?", $sName), 0, $hParent) = 6 Then
+            If _YTS_Unsubscribe($sChan) Then
+                _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
+                MsgBox(64, _T("YouTube subscriptions"), _TF("Unsubscribed from {1}", $sName), 0, $hParent)
+                Return 0
+            EndIf
+        EndIf
+        Return -1
+    EndIf
+    If $sSeen = "" Then
+        Local $aI[1], $aT[1]
+        If _YTS_Fetch($sChan, 1, $aI, $aT) > 0 Then $sSeen = $aI[0]
+    EndIf
+    If _YTS_Subscribe($sChan, $sName, $sSeen) >= 0 Then
+        _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
+        MsgBox(64, _T("YouTube subscriptions"), _TF("Subscribed to {1}", $sName), 0, $hParent)
+        Return 1
+    EndIf
+    Return -1
+EndFunc
+
+; From a video (or a channel found in the search results): subscribe to its channel
+Func _YTS_SubscribeFromItem($sID, $sTitle, $sType, $hParent = 0)
+    Local $sChan = "", $sName = ""
+    If $sType = "channel" Then
+        $sChan = $sID
+        $sName = $sTitle
+    ElseIf Not _YTS_ResolveChannel($sID, $sChan, $sName, $hParent) Then
+        MsgBox(16, _T("Error"), _T("Cannot get channel URL. The video might be from a deleted channel or restricted."), 0, $hParent)
+        Return
+    EndIf
+    _YTS_ToggleChannel($sChan, $sName, "", $hParent)
+EndFunc
+
+; ---------- YouTube subscriptions: check by hand ----------
+; Checks every channel. $aCnt[i] = number of new videos (-1 = could not be read). The new videos are collected in
+; $aCIds / $aCTitles / $aCChan (channel name) / $nComb; $aNewest[i] = newest video of channel i.
+Func _YTS_CheckAll(ByRef $aSub, ByRef $aCnt, ByRef $aCIds, ByRef $aCTitles, ByRef $aCChan, ByRef $nComb, ByRef $aNewest, $hParent = 0)
+    Local $nSub = UBound($aSub), $i, $k, $n, $iNew, $aIds[1], $aTit[1]
+    $nComb = 0
+    Local $hLoad = GUICreate(_T("Loading"), 300, 80, -1, -1, $WS_POPUP, BitOR($WS_EX_TOPMOST, $WS_EX_TOOLWINDOW))
+    GUISetBkColor(0xFFFFFF)
+    GUICtrlCreateLabel(_T("Checking for new videos..."), 10, 25, 280, 40, $SS_CENTER)
+    GUISetState(@SW_SHOW, $hLoad)
+    _Snd_LoadStart()
+    For $i = 0 To $nSub - 1
+        $aCnt[$i] = -1
+        $aNewest[$i] = ""
+        $n = _YTS_Fetch($aSub[$i][0], 30, $aIds, $aTit)
+        If $n < 1 Then ContinueLoop
+        $aNewest[$i] = $aIds[0]
+        $iNew = _YTS_NewCount($aIds, $n, $aSub[$i][2])
+        $aCnt[$i] = $iNew
+        _Sub_SetNew("yt", $aSub[$i][0], $iNew)
+        If $iNew > 0 Then _Sub_NotifiedSet("yt:" & $aSub[$i][0], $aIds[0]) ; already known: not announced again at startup
+        For $k = 0 To $iNew - 1
+            If $nComb >= UBound($aCIds) Then ExitLoop
+            $aCIds[$nComb] = $aIds[$k]
+            $aCTitles[$nComb] = $aTit[$k]
+            $aCChan[$nComb] = $aSub[$i][1]
+            $nComb += 1
+        Next
+    Next
+    _Snd_LoadStop()
+    GUIDelete($hLoad)
+    If IsHWnd($hParent) Then GUISwitch($hParent)
+    If $nComb > 0 Then
+        _AppSoundPlay(@ScriptDir & "\sounds\new_content.wav")
+    Else
+        _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
+    EndIf
+EndFunc
+
+Func _YTS_FillList($lst, ByRef $aSub, ByRef $aCnt)
+    _GUICtrlListBox_ResetContent($lst)
+    Local $i, $s
+    For $i = 0 To UBound($aSub) - 1
+        $s = $aSub[$i][1]
+        If $aCnt[$i] > 0 Then $s &= " - " & _TF("{1} new", $aCnt[$i])
+        _GUICtrlListBox_AddString($lst, $s)
+    Next
+EndFunc
+
+; List of the new videos of all channels: Enter = play, Ctrl+Enter = play as audio
+Func _YTS_NewVideosWindow(ByRef $aCIds, ByRef $aCTitles, ByRef $aCChan, $nComb, $hParent = 0)
+    Local $hGui = GUICreate(_T("New videos"), 520, 440)
+    GUISetBkColor($COLOR_BLUE)
+    GUICtrlCreateLabel(_TF("{1} new videos. Press Enter to play, Ctrl+Enter to play as audio.", $nComb), 10, 10, 500, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $lst = GUICtrlCreateList("", 10, 35, 500, 340, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
+    Local $btnClose = GUICtrlCreateButton(_T("Close"), 10, 390, 500, 34)
+    Local $aIds[$nComb + 1], $aTit[$nComb + 1], $aTyp[$nComb + 1], $i
+    For $i = 0 To $nComb - 1
+        _GUICtrlListBox_AddString($lst, ($i + 1) & ". " & $aCChan[$i] & " - " & $aCTitles[$i])
+        $aIds[$i + 1] = $aCIds[$i]
+        $aTit[$i + 1] = $aCTitles[$i]
+        $aTyp[$i + 1] = "video"
+    Next
+    _GUICtrlListBox_SetCurSel($lst, 0)
+    GUISetState(@SW_SHOW, $hGui)
+    ControlFocus($hGui, "", $lst)
+    Local $hEnter = GUICtrlCreateDummy(), $hAudio = GUICtrlCreateDummy()
+    Local $aAcc[2][2] = [["{ENTER}", $hEnter], ["^{ENTER}", $hAudio]]
+    GUISetAccelerators($aAcc, $hGui)
+    Local $bEnterAcc = True
+    While 1
+        _SyncEnterAccel($hGui, $aAcc, $lst, $bEnterAcc)
+        Local $nMsg = GUIGetMsg()
+        If $nMsg = $hEnter Then
+            Local $aBtn[1] = [$btnClose]
+            Local $iBtn = _EnterFocusedButton($hGui, $aBtn)
+            If $iBtn <> 0 Then $nMsg = $iBtn
+        EndIf
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnClose
+                GUIDelete($hGui)
+                Return
+            Case $hEnter, $hAudio
+                Local $iIdx = _GUICtrlListBox_GetCurSel($lst)
+                If $iIdx <> -1 Then
+                    Local $aSvI = $aSearchIds, $aSvT = $aSearchTitles, $aSvY = $aSearchTypes, $iSvN = $iTotalLoaded
+                    $aSearchIds = $aIds
+                    $aSearchTitles = $aTit
+                    $aSearchTypes = $aTyp
+                    $iTotalLoaded = $nComb
+                    _PlayLoop($iIdx, ($nMsg = $hAudio))
+                    $aSearchIds = $aSvI
+                    $aSearchTitles = $aSvT
+                    $aSearchTypes = $aSvY
+                    $iTotalLoaded = $iSvN
+                EndIf
+        EndSwitch
+    WEnd
+EndFunc
+
+; Main window > YouTube Subscriptions
+Func _YTS_SubsWindow($hParent = 0)
+    Local $aSub = _YTS_Load()
+    If Not IsArray($aSub) Then
+        MsgBox(64, _T("YouTube subscriptions"), _T("You have no YouTube subscriptions yet. Open a channel and press Ctrl+D, or choose Subscribe to channel in the menu of a video."))
+        Return
+    EndIf
+    Local $nSub = UBound($aSub), $i
+    Local $aCnt[$nSub], $aNewest[$nSub]
+    For $i = 0 To $nSub - 1
+        $aCnt[$i] = _Sub_GetNew("yt", $aSub[$i][0])
+        $aNewest[$i] = ""
+    Next
+    Local $aCIds[300], $aCTitles[300], $aCChan[300], $nComb = 0, $bChecked = False
+
+    Local $hGui = GUICreate(_T("YouTube subscriptions"), 520, 440)
+    GUISetBkColor($COLOR_BLUE)
+    Local $lbl = GUICtrlCreateLabel(_TF("{1} YouTube channels. Press Enter to open one.", $nSub), 10, 10, 500, 20)
+    GUICtrlSetColor(-1, 0xFFFFFF)
+    Local $lst = GUICtrlCreateList("", 10, 35, 500, 300, BitOR($LBS_NOTIFY, $WS_VSCROLL, $WS_BORDER))
+    Local $btnOpen = GUICtrlCreateButton(_T("&Open"), 10, 345, 160, 34)
+    Local $btnCheck = GUICtrlCreateButton(_T("Chec&k for new videos"), 180, 345, 160, 34)
+    Local $btnNew = GUICtrlCreateButton(_T("&New videos"), 350, 345, 160, 34)
+    Local $btnUnsub = GUICtrlCreateButton(_T("&Unsubscribe (Delete)"), 10, 390, 245, 34)
+    Local $btnClose = GUICtrlCreateButton(_T("&Close"), 265, 390, 245, 34)
+    _YTS_FillList($lst, $aSub, $aCnt)
+    _GUICtrlListBox_SetCurSel($lst, 0)
+    GUISetState(@SW_SHOW, $hGui)
+    ControlFocus($hGui, "", $lst)
+    Local $hEnter = GUICtrlCreateDummy(), $hDel = GUICtrlCreateDummy()
+    Local $aAcc[2][2] = [["{ENTER}", $hEnter], ["{DELETE}", $hDel]]
+    GUISetAccelerators($aAcc, $hGui)
+    Local $bEnterAcc = True
+
+    While 1
+        _SyncEnterAccel($hGui, $aAcc, $lst, $bEnterAcc)
+        Local $nMsg = GUIGetMsg()
+        If $nMsg = $hEnter Then
+            Local $aBtn[5] = [$btnOpen, $btnCheck, $btnNew, $btnUnsub, $btnClose]
+            Local $iBtn = _EnterFocusedButton($hGui, $aBtn)
+            If $iBtn <> 0 Then $nMsg = $iBtn
+        EndIf
+        Local $iSel = _GUICtrlListBox_GetCurSel($lst)
+        Switch $nMsg
+            Case $GUI_EVENT_CLOSE, $btnClose
+                ExitLoop
+            Case $hEnter, $btnOpen
+                If $iSel >= 0 Then
+                    _ShowChannelVideos($aSub[$iSel][0], $aSub[$iSel][1], 100)
+                    GUISwitch($hGui)
+                    $aSub = _YTS_Load()
+                    If Not IsArray($aSub) Or UBound($aSub) <> $nSub Then ExitLoop
+                    $aCnt[$iSel] = _Sub_GetNew("yt", $aSub[$iSel][0])
+                    _YTS_FillList($lst, $aSub, $aCnt)
+                    _GUICtrlListBox_SetCurSel($lst, $iSel)
+                    WinActivate($hGui)
+                EndIf
+            Case $btnCheck
+                _YTS_CheckAll($aSub, $aCnt, $aCIds, $aCTitles, $aCChan, $nComb, $aNewest, $hGui)
+                $bChecked = True
+                _YTS_FillList($lst, $aSub, $aCnt)
+                _GUICtrlListBox_SetCurSel($lst, Number($iSel > 0 ? $iSel : 0))
+                ControlFocus($hGui, "", $lst)
+                If $nComb > 0 Then
+                    _ReportStatus(_TF("{1} new videos", $nComb))
+                Else
+                    _ReportStatus(_T("No new videos."))
+                EndIf
+            Case $btnNew
+                If Not $bChecked Then
+                    _YTS_CheckAll($aSub, $aCnt, $aCIds, $aCTitles, $aCChan, $nComb, $aNewest, $hGui)
+                    $bChecked = True
+                EndIf
+                If $nComb = 0 Then
+                    MsgBox(64, _T("YouTube subscriptions"), _T("No new videos."), 0, $hGui)
+                Else
+                    _YTS_NewVideosWindow($aCIds, $aCTitles, $aCChan, $nComb, $hGui)
+                    GUISwitch($hGui)
+                    ; they have been shown: from now on they are no longer new
+                    For $i = 0 To $nSub - 1
+                        If $aCnt[$i] > 0 And $aNewest[$i] <> "" Then
+                            _YTS_SetSeen($aSub[$i][0], $aNewest[$i])
+                            _Sub_SetNew("yt", $aSub[$i][0], 0)
+                            $aCnt[$i] = 0
+                        EndIf
+                    Next
+                    $aSub = _YTS_Load()
+                    $nComb = 0
+                    $bChecked = False
+                    _YTS_FillList($lst, $aSub, $aCnt)
+                    _GUICtrlListBox_SetCurSel($lst, 0)
+                    WinActivate($hGui)
+                EndIf
+                ControlFocus($hGui, "", $lst)
+            Case $hDel, $btnUnsub
+                If $iSel >= 0 Then
+                    If MsgBox(36, _T("YouTube subscriptions"), _TF("Unsubscribe from {1}?", $aSub[$iSel][1]), 0, $hGui) = 6 Then
+                        Local $sRemoved = $aSub[$iSel][1]
+                        _YTS_Unsubscribe($aSub[$iSel][0])
+                        _AppSoundPlay(@ScriptDir & "\sounds\ok.wav")
+                        $aSub = _YTS_Load()
+                        If Not IsArray($aSub) Then
+                            MsgBox(64, _T("YouTube subscriptions"), _TF("Unsubscribed from {1}", $sRemoved), 0, $hGui)
+                            ExitLoop
+                        EndIf
+                        $nSub = UBound($aSub)
+                        ReDim $aCnt[$nSub]
+                        ReDim $aNewest[$nSub]
+                        For $i = 0 To $nSub - 1
+                            $aCnt[$i] = _Sub_GetNew("yt", $aSub[$i][0])
+                        Next
+                        $bChecked = False
+                        $nComb = 0
+                        GUICtrlSetData($lbl, _TF("{1} YouTube channels. Press Enter to open one.", $nSub))
+                        _YTS_FillList($lst, $aSub, $aCnt)
+                        _GUICtrlListBox_SetCurSel($lst, 0)
+                        _ReportStatus(_TF("Unsubscribed from {1}", $sRemoved))
+                    EndIf
+                    ControlFocus($hGui, "", $lst)
+                EndIf
+        EndSwitch
+        Sleep(10)
+    WEnd
+    GUIDelete($hGui)
+EndFunc
+
+; ---------- check for new content when the application starts ----------
+; Runs in small steps from Adlib so the window stays responsive. Paused while another window (player...) is open.
+Func _Sub_StartupCheck()
+    If $g_bSubWindowOpen Then Return ; try again later
+    AdlibUnRegister("_Sub_StartupCheck")
+    Local $aPod = _Pod_SubLoad(), $aYT = _YTS_Load()
+    Local $nP = 0, $nY = 0, $i, $k = 0
+    If IsArray($aPod) Then $nP = UBound($aPod)
+    If IsArray($aYT) Then $nY = UBound($aYT)
+    If $nP + $nY = 0 Then Return
+    Local $aJobs[$nP + $nY][4]
+    For $i = 0 To $nP - 1
+        $aJobs[$k][0] = "pod"
+        $aJobs[$k][1] = $aPod[$i][0]
+        $aJobs[$k][2] = $aPod[$i][3]
+        $aJobs[$k][3] = $aPod[$i][1]
+        $k += 1
+    Next
+    For $i = 0 To $nY - 1
+        $aJobs[$k][0] = "yt"
+        $aJobs[$k][1] = $aYT[$i][0]
+        $aJobs[$k][2] = $aYT[$i][2]
+        $aJobs[$k][3] = $aYT[$i][1]
+        $k += 1
+    Next
+    $g_aSubJobs = $aJobs
+    $g_iSubJobN = $k
+    $g_iSubJobI = 0
+    $g_iSubPid = 0
+    $g_iSubNewPod = 0
+    $g_iSubNewYT = 0
+    AdlibRegister("_Sub_Tick", 300)
+EndFunc
+
+Func _Sub_Tick()
+    If $g_bSubWindowOpen Then Return
+    If $g_iSubJobI >= $g_iSubJobN Then
+        _Sub_Finish()
+        Return
+    EndIf
+    If $g_aSubJobs[$g_iSubJobI][0] = "pod" Then
+        _Sub_CheckPodcastJob($g_iSubJobI)
+        $g_iSubJobI += 1
+        Return
+    EndIf
+    ; YouTube channel: yt-dlp runs in the background, we only look at it from time to time
+    If $g_iSubPid = 0 Then
+        $g_iSubPid = Run(_YTS_CmdFetch($g_aSubJobs[$g_iSubJobI][1], 30), @ScriptDir, @SW_HIDE, $STDOUT_CHILD + $STDERR_CHILD)
+        If @error Or $g_iSubPid = 0 Then
+            $g_iSubPid = 0
+            $g_iSubJobI += 1
+            Return
+        EndIf
+        $g_bSubData = Binary("")
+        $g_hSubTimer = TimerInit()
+        Return
+    EndIf
+    $g_bSubData &= StdoutRead($g_iSubPid, False, True)
+    StderrRead($g_iSubPid)
+    If ProcessExists($g_iSubPid) Then
+        If TimerDiff($g_hSubTimer) > 60000 Then ; too slow: skip this channel
+            ProcessClose($g_iSubPid)
+            $g_iSubPid = 0
+            $g_iSubJobI += 1
+        EndIf
+        Return
+    EndIf
+    $g_bSubData &= StdoutRead($g_iSubPid, False, True)
+    $g_iSubPid = 0
+    Local $aIds[1], $aTit[1]
+    Local $n = _YTS_Parse(BinaryToString($g_bSubData, 4), $aIds, $aTit)
+    If $n > 0 Then _Sub_Record("yt", $g_aSubJobs[$g_iSubJobI][1], _YTS_NewCount($aIds, $n, $g_aSubJobs[$g_iSubJobI][2]), $aIds[0])
+    $g_iSubJobI += 1
+EndFunc
+
+Func _Sub_CheckPodcastJob($i)
+    Local $sXml = _Pod_Http($g_aSubJobs[$i][1], 8000)
+    If $sXml = "" Then Return
+    Local $sT = "", $sA = ""
+    Local $aEp = _Pod_ParseFeed($sXml, $sT, $sA)
+    If Not IsArray($aEp) Then Return
+    Local $iEpN = UBound($aEp)
+    Local $iNew = _Pod_NewCount($aEp, $iEpN, $g_aSubJobs[$i][2]), $k, $iUnplayed = 0
+    Local $sPlayed = _Pod_PlayedSet()
+    For $k = 0 To $iNew - 1
+        If Not StringInStr($sPlayed, @LF & StringLower($aEp[$k][4]) & @LF) Then $iUnplayed += 1
+    Next
+    _Sub_Record("pod", $g_aSubJobs[$i][1], $iUnplayed, $aEp[0][4])
+EndFunc
+
+; Remembers what was found; counts it for the announcement only if it was not announced before
+Func _Sub_Record($sType, $sId, $iNew, $sNewestKey)
+    _Sub_SetNew($sType, $sId, $iNew)
+    If $iNew <= 0 Then Return
+    Local $sKey = $sType & ":" & $sId
+    If _Sub_NotifiedGet($sKey) = _Pod_Clean($sNewestKey) Then Return
+    _Sub_NotifiedSet($sKey, $sNewestKey)
+    If $sType = "pod" Then
+        $g_iSubNewPod += $iNew
+    Else
+        $g_iSubNewYT += $iNew
+    EndIf
+EndFunc
+
+Func _Sub_Finish()
+    AdlibUnRegister("_Sub_Tick")
+    Local $iP = $g_iSubNewPod, $iY = $g_iSubNewYT
+    $g_iSubNewPod = 0
+    $g_iSubNewYT = 0
+    If $iP + $iY = 0 Then Return ; nothing new: no sound, no message
+    _AppSoundPlay(@ScriptDir & "\sounds\new_content.wav")
+    Local $s
+    If $iP > 0 And $iY > 0 Then
+        $s = _TF("New content: {1} new podcast episodes and {2} new YouTube videos.", $iP, $iY)
+    ElseIf $iP > 0 Then
+        $s = _TF("New content: {1} new podcast episodes.", $iP)
+    Else
+        $s = _TF("New content: {1} new YouTube videos.", $iY)
+    EndIf
+    _NVDA_Speak($s)
 EndFunc

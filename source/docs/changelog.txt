@@ -1,3 +1,29 @@
+changes for version 3.2
+- Copy link now opens a dialog so you can choose which kind of link to copy: the standard link (https://www.youtube.com/watch?v=...) or the short link (https://youtu.be/...).
+- The dialog has a Close button (or press Esc) and stays open after copying, so you can copy both kinds of link one after the other.
+- The new dialog is used everywhere a video link can be copied: the context menu of search results, history, favorites and collections, the play queue, the Options menu of the player (Copy Link) and ctrl+k in the player.
+- Share (Telegram and Facebook) now also opens a dialog so you can choose the standard link or the short link before the video is shared. Press Esc or Cancel to close it without sharing.
+- The share dialog is used everywhere a video can be shared: the context menu of search results, history, favorites and collections, the play queue, and the Options menu of the player.
+- add Podcasts button to the main window (Alt+K): search podcasts by name (Apple podcast directory) or paste the RSS link of a podcast, open its episodes and press Enter to play. Episodes play in the normal player, so speed, seek, Go to time, Sleep Timer and the other shortcuts work as usual.
+- Podcasts: each episode remembers where you stopped and continues from there next time; played episodes are marked. Ctrl+D subscribes or unsubscribes, Ctrl+M marks an episode as played or not played, Ctrl+K copies the episode link, Ctrl+I shows the show notes.
+- Podcasts: My subscriptions lists the podcasts you follow (Delete removes one) and can check them for new episodes. New episodes lists the episodes that appeared since you last opened each podcast. Shift+N / Shift+B play the next / previous episode of the list, and N turns auto-play of the next episode on or off.
+- add chapters in the player: Page Down / Page Up jump to the next / previous chapter (Page Up goes to the start of the current chapter first), H opens the list of chapters, and the title of each new chapter is announced when it begins. Chapters come from YouTube and other sites (yt-dlp), from audio files and videos on your computer that contain chapters (ffmpeg), and from podcasts (chapters file of the feed, or time stamps such as 12:30 in the show notes).
+- add Source in the Search window: YouTube and SoundCloud. SoundCloud uses the keyword search of yt-dlp.
+- add Voice enhancement (Off / Light / Strong): a compressor evens out loud and quiet voices and an equalizer lifts the speech range. Change it in Settings > Player, or press Ctrl+Shift+V in the player to switch it while listening.
+- add new option in settings: Announce the chapter title when a new chapter starts.
+- The Search on YouTube button is now called Search Videos and Music (Alt+S), because it searches YouTube and SoundCloud.
+- Podcasts now have the same sounds as the search: key sounds while you type in the search box (when typing sounds are on), loading sound while it searches or opens a podcast, result sound when podcasts are found, ok sound when a podcast or episode opens, and an error sound when something fails.
+- add YouTube Subscriptions button to the main window (Alt+Y): the YouTube channels you follow. Enter opens a channel (the latest 100 videos, the new ones are marked New), Delete unsubscribes, Check for new videos counts the new videos of each channel, and New videos lists them all so you can press Enter to play (Ctrl+Enter plays as audio).
+- You can subscribe to a YouTube channel with Ctrl+D in the list of videos of a channel, with Subscribe to channel in the context menu of a video in search results, history, favorites and collections, or with Options > Subscribe to Channel in the player.
+- When a podcast or a YouTube channel you follow publishes something new, the application plays new_content.wav and announces how many new episodes and videos there are. This check runs quietly in the background when the application starts, and also when you press Check for new episodes or Check for new videos.
+- add new option in settings > General: Check subscriptions for new content on startup. When it is on, you are told about new content each time the application starts, and nothing is said when there is nothing new. When it is off, nothing is checked at startup and you check by hand with the Check for new episodes and Check for new videos buttons.
+- Copy link and Share on SoundCloud (and other sites) no longer ask for a short or standard link: the link is copied or shared straight away. Ctrl+C in the player copies the link at the current time (SoundCloud understands it too).
+- SoundCloud links are now handled like YouTube links: if you copy a SoundCloud link, the application offers to play it or download it when it starts. Pasting it in Play Video or Music Link or Download from link works too. Go to channel opens the page of the artist.
+- The Play YouTube link button is now called Play Video or Music Link (Alt+P), and its window is now called Video and Music Link Player, because it also accepts SoundCloud links. Its text now asks for a YouTube or SoundCloud link.
+- When you play a SoundCloud link as audio, the window title (read by NVDA+T) is now SoundCloud Audio Player. YouTube audio still shows YouTube Audio Player.
+- The option "Automatically detect YouTube links in clipboard on launch" now also covers SoundCloud links.
+- In Settings > Search, the list for choosing the typing sound only appears when Enable typing sounds in search box is on.
+
 changes for version 3.1
 - Several customizations have been included for the license dialog box.
 - update new sounds.

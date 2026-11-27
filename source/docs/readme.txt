@@ -4,10 +4,10 @@ vdhMediaCenter is created by vdh productions. This software allows you to search
 Instructions:
 After downloading, please extract the file. Note: If your antivirus software scans the exe file, please turn off your antivirus software. Find the vdh media center.exe file to start a software window.
 After running, an interface will appear with the following functions:
-PlayYouTubeLink: This function allows you to paste the YouTube link so you can listen. It includes a Play (Default Player) button to listen directly within the software interface. Play in Browser allows you to open it directly in your browser.
+Play Video or Music Link: This function allows you to paste a YouTube or SoundCloud link so you can listen. SoundCloud links are played as audio, and the player window is named SoundCloud Audio Player (YouTube audio is named YouTube Audio Player). It includes a Play (Default Player) button to listen directly within the software interface. Play in Browser allows you to open it directly in your browser.
 Play a direct link: You can watch videos directly from YouTube or sites that support stream links.
 Download from Link: This function allows you to paste the YouTube link to download the video. When you paste the link to the entire playlist, it will download the entire playlist. Note: Downloading the playlist takes quite a long time. You can currently download MP4, WebM, MP3, WAV, and M4A videos. Additionally, you can also download videos from other sites outside of YouTube.
-Search on YouTube: This function allows you to search for a song or video of your choice. When you press this button, a "Enter keyword to search" box will appear where you can enter your desired result. For example, the result might be "hello". After entering the result, find the search button and press it. When you press the search button, another interface will appear where you can use the up and down arrow keys or navigate with your mouse to browse through the list boxes. After finding the desired result, press it again, and the options interface will appear. You can do whatever you want with this interface; you can play, download, or copy the video link to your clipboard.
+Search Videos and Music: This function allows you to search for a song or video of your choice. When you press this button, a "Enter keyword to search" box will appear where you can enter your desired result. For example, the result might be "hello". After entering the result, find the search button and press it. When you press the search button, another interface will appear where you can use the up and down arrow keys or navigate with your mouse to browse through the list boxes. After finding the desired result, press it again, and the options interface will appear. You can do whatever you want with this interface; you can play, download, or copy the video link to your clipboard.
 Search History: Search history will be stored for convenient searching.
 Favorite Video: A list of favorite videos will appear when clicking this button. If there are no favorite videos, you will be prompted.
 Your collection: You can watch your favorite collections with the best videos.
@@ -41,7 +41,7 @@ main shortcut:
 We have assigned keyboard shortcuts for you to easily use the software and be flexible in your operations.
 home: beginning of the video
 end: end of a video
-control+k: copy link from clipboard.
+control+k: copy the video link (opens a dialog to choose the standard link or the short youtu.be link).
 control+left/right: pan left and pan right.
 c: copy the title of the track you are listening to (no dialog, only a spoken/status message).
 alt+left/right: rewind / fast forward exactly 1 minute.
@@ -82,18 +82,23 @@ up/down arrow: increase/decrease volume
 left/right arrow: rewind/fast forward
 control+alt+t: activate video transcript.
 control+alt+l: activate view lyrics.
+page up/page down: previous/next chapter (when the video, episode or file has chapters).
+h: list of chapters, press enter to jump to a chapter.
+control+shift+v: voice enhancement (Off / Light / Strong).
 main window shortcut:
 Below are the keyboard shortcuts of the buttons on the main window. You can change all of them in Settings > Shortcuts.
 alt+d: Download from link.
-alt+p: Play YouTube link.
+alt+p: Play Video or Music Link.
 alt+l: Play direct link.
-alt+s: Search on YouTube.
+alt+s: Search Videos and Music.
 alt+c: Your collections.
 alt+u: Listen to Audio File.
 alt+e: Recent Files.
 alt+o: Recent Folders.
 alt+r: Radio Player.
 alt+v: Favorite Stations.
+alt+k: Podcasts.
+alt+y: YouTube Subscriptions.
 alt+q: Play Queue.
 alt+z: Download Queue.
 alt+f: Favorites.
@@ -101,6 +106,38 @@ alt+w: Watch History.
 control+shift+s: Settings.
 f1: Readme.
 f2: view changelog.
+podcasts:
+Podcasts (main window, Alt+K) lets you listen to podcasts.
+Search box: type the name of a podcast and press Enter to search the Apple podcast directory, or paste the RSS link of a podcast to open it directly.
+Search: finds podcasts. Press Enter on a podcast to open the list of its episodes (the newest first), then press Enter on an episode to play it.
+My subscriptions: the podcasts you follow. Enter opens one, delete unsubscribes, and Check for new episodes counts the new episodes of each podcast.
+New episodes: the episodes that appeared since you last opened each podcast you follow. Enter plays one.
+episode list shortcuts: enter: play. control+d: subscribe or unsubscribe. control+m: mark the episode as played or not played. control+k: copy the episode link. control+i: show notes. esc: close.
+Episodes play in the normal player: all the player shortcuts work (speed, seek, go to time, sleep timer in the Options menu, chapters, voice enhancement). Shift+N / Shift+B play the next / previous episode of the list and N turns auto-play of the next episode on or off.
+Each episode remembers where you stopped and continues from there. The list shows New, Listened to (time) and Played for each episode. Subscriptions and positions are saved in your settings folder.
+The podcast search box has the same sounds as the search window: key sounds while you type (if typing sounds are on in settings), a loading sound while it searches or opens a podcast, a result sound when podcasts are found and an ok sound when a podcast or an episode opens.
+New episodes of the podcasts you follow are announced with the sound new_content.wav (see "new content" below).
+
+youtube subscriptions:
+YouTube Subscriptions (main window, Alt+Y) lists the YouTube channels you follow.
+To subscribe: press Ctrl+D in the list of videos of a channel, or choose Subscribe to channel in the context menu of a video (search results, history, favorites, collections), or Options > Subscribe to Channel in the player.
+Enter opens a channel with its latest 100 videos; the videos published since your last visit are marked New. Press Enter on a video to play it, Ctrl+Enter to play it as audio.
+Delete unsubscribes. Check for new videos counts the new videos of each channel. New videos lists the new videos of all channels (Enter plays, Ctrl+Enter plays as audio); after you have seen the list they are no longer new.
+
+new content:
+When a podcast or a YouTube channel you follow publishes something new, the application plays new_content.wav and says how many new episodes and videos there are.
+If "Check subscriptions for new content on startup" is on (Settings > General, on by default), the application checks quietly each time it starts. If nothing is new, you hear nothing. If it is off, nothing is checked at startup; use Check for new episodes (Podcasts > My subscriptions) and Check for new videos (YouTube Subscriptions) when you want to look.
+The same news is announced only once.
+
+chapters:
+When the video, episode or audio file has chapters, page down jumps to the next chapter, page up to the start of the current chapter (press again within 3 seconds to go to the previous one), and h opens the list of chapters (enter jumps to the chapter). The title of each new chapter is announced when it begins (Settings > Player > Announce the chapter title when a new chapter starts). The Options menu of the player also has Chapters.
+YouTube and other sites: chapters come from the video through yt-dlp, so they appear a few seconds after the video starts (you hear how many chapters there are).
+Audio files and videos on your computer: chapters stored in the file are read with ffmpeg.
+Podcasts: the chapters file of the feed, or lines such as 12:30 Title in the show notes (at least three).
+voice enhancement:
+Makes speech clearer. Light is gentle, Strong helps with quiet or unclear recordings. A compressor evens out loud and quiet voices and an equalizer lifts the speech range (the equalizer part is used only when the equalizer in Settings is Off). Change it in Settings > Player > Voice enhancement, or press control+shift+v in the player: it switches Off, Light and Strong while you listen (the sound restarts at the same position for a moment). It also works for the radio from the next station.
+search sources:
+In the Search window, Source chooses where to search: YouTube (default) or SoundCloud. The Filter list is used for YouTube only. SoundCloud uses the keyword search of yt-dlp.
 radio shortcut:
 Below are the keyboard shortcuts in the radio player window:
 enter: play the selected station.
@@ -165,7 +202,7 @@ Numbering
 Numbering and create subdirectory
 download button: when press, activate download video.
 cancel button: cancel download or close interface.
-copy link : you can copy link to paste in editing tools.
+copy link : opens a dialog where you choose the standard link (youtube.com/watch?v=...) or the short link (youtu.be/...) to copy and paste in editing tools. Use the Close button or Esc to close it. Links of SoundCloud and other sites have no short form, so they are copied (or shared) straight away without this dialog.
 Add to queue: Adds the video to the play queue.
 Play queue: Opens the play queue.
 Add to download queue: Adds the video to the download queue.
@@ -183,6 +220,7 @@ view lyrics: you can easily read the lyrics of the song you're listening.
 Share: You can share videos with friends around you through the following supported services:
 telegram.
 facebook.
+When you choose a service, a dialog asks which link to share: the standard link (youtube.com/watch?v=...) or the short link (youtu.be/...). Use the Cancel button or Esc to close it without sharing.
 settings
 You can customize your favorite features in this settings section. Press F1 on any option to hear a short description of it.
 General tab
@@ -190,7 +228,8 @@ This tab will give you a few options:
 Application language(requires restart): You can choose the language that is easiest for you to understand.
 Automatically check for updates on startup: the app looks for a newer version every time it opens.
 Start program automatically after login: the app launches by itself when you sign in to Windows.
-Automatically detect YouTube links in clipboard on launch: if you have copied a YouTube link, the app offers to use it as soon as it starts.
+Check subscriptions for new content on startup: when on, each time the application starts it checks your podcasts and YouTube channels quietly and tells you if there is something new (nothing is said if there is not). When off, use the check buttons by hand.
+Automatically detect YouTube links in clipboard on launch: if you have copied a YouTube or SoundCloud link, the app offers to play or download it as soon as it starts.
 Automatically check for yt-dlp updates on startup: keeps the download engine (yt-dlp) up to date so that downloading and searching keep working.
 Turn off sound in application: If you're feeling too dissatisfied with the sound system, this option will solve that problem.
 show logo when the application start: If selected, the logo sound will be on, and off if you deselect it.
@@ -202,6 +241,8 @@ Audio Output Device: choose which sound device (speakers, headphones...) the pla
 Skip silence (Recommended only for music): automatically jumps over silent parts of the audio.
 Equalizer: choose a preset (Off, Flat, Classical, Rock, Pop...) to adjust the sound tone, such as bass and treble, to suit the kind of audio. You can also press control+e in the player to open the Equalizer window, where you choose a preset or choose Custom to set the preamp and each frequency band yourself. Use the left and right arrow keys on a slider to change it by 1 dB, page up and page down by 5 dB. The Reset (flat) button puts every slider back to zero.
 Normalize volume (keeps the loudness even between tracks).
+Voice enhancement: Off, Light or Strong. Makes speech clearer for podcasts and lectures (also control+shift+v in the player).
+Announce the chapter title when a new chapter starts: the screen reader reads each new chapter as it begins.
 Seeking Announcement Mode: chooses what you hear when you rewind or fast forward.
 Silent: nothing is announced.
 Read percentage: announces the new position as a percentage of the video.
@@ -246,8 +287,8 @@ Recording volume (0-100): how loud the recordings are. 100 is the full volume of
 Search tab
 In this tab you can customize search settings:
 Automatically search after voice input: searches right after you finish speaking, without pressing the search button.
-Enable typing sounds in search box: plays a sound for each key you type in the search box.
-select typing sound: choose which sound is played while typing.
+Enable typing sounds in search box: plays a sound for each key you type in the search boxes (search window and podcasts).
+select typing sound: choose which sound is played while typing. This list only appears when the option above is on.
 Data tab
 In this tab there will be a few options related to configuration data:
 Backup Configuration: saves your current settings to a file for safekeeping.
